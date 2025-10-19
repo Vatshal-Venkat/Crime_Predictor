@@ -1,19 +1,5 @@
-# Core packages
 streamlit==1.50.0
 pandas==2.3.3
 numpy==1.26.4
 scikit-learn==1.7.2
-xgboost==1.7.7
-tensorflow==2.20.0
-scikeras==0.13.0
-
-# Visualization
-plotly==6.3.1
-
-# Utilities
-joblib==1.5.2
-fuzzywuzzy==0.18.0
-python-Levenshtein==0.21.2
-
-# Rich logging
-rich==14.2.0
+xgboost==1.7.6
