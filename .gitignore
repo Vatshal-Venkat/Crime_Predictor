@@ -1,0 +1,51 @@
+# Python-specific
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Machine learning artifacts
+*.pkl
+*.h5
+crime_predictor.log
+
+# Data files (avoid committing sensitive datasets)
+*.xlsx
+*.csv
+*.tsv
+*.parquet
+*.feather
+
+# Streamlit
+.streamlit/
+*.db
+
+# Jupyter notebooks
+*.ipynb_checkpoints/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Miscellaneous
+*.bak
+*.swp
+*~
+*.log
+*.tmp
