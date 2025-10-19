@@ -26,6 +26,16 @@ import time
 # Suppress oneDNN custom operations message
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
+# Professional color palette starting with #FF3D00
+PROFESSIONAL_PALETTE = [
+    '#FF3D00',  # Vibrant orange (primary)
+    '#FF7043',  # Light orange
+    '#FF8F00',  # Deep orange
+    '#FFB300',  # Amber
+    '#FFCA28',  # Light amber
+    '#FFA000',  # Orange accent
+]
+
 # Logging setup
 logging.basicConfig(filename='crime_predictor.log', level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,9 +49,7 @@ This application predicts likely crime locations based on crime data using Rando
 
 # --- File Upload ---
 uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx"])
-if uploaded_file is None:
-    st.info("Please upload an Excel file to begin.")
-    st.stop()
+
 
 try:
     df = pd.read_excel(uploaded_file)
@@ -53,8 +61,7 @@ except Exception as e:
     st.stop()
 
 # --- Debug: Raw Data ---
-
-st.write(f"Unique FIR_MONTH values before cleaning: \n{df[' FIR_MONTH '].value_counts(dropna=False)}")
+#st.write(f"Unique FIR_MONTH values before cleaning: \n{df['FIR_MONTH'].value_counts(dropna=False)}")
 
 # --- Normalize Column Names ---
 df.columns = df.columns.str.strip().str.upper()
@@ -114,7 +121,6 @@ if not major_head_col:
     logging.error(f"Could not find crime type column. Columns present: {list(df.columns)}")
     st.stop()
 
-
 # --- Clean Text Fields ---
 for c in [major_head_col, ps_col, district_col, minor_head_col]:
     if c and c in df.columns:
@@ -137,7 +143,7 @@ if target_col is None and ps_col:
     vcps = df[ps_col].value_counts()
     if vcps.size >= 2 and vcps.min() >= min_samples_for_ps:
         target_col = ps_col
-        st.write(f"📊 Using {ps_col} as ML Target ({vcps.size} classes, min {vcps.min()} samples).")
+        st.write(f"📊 Using {ps_col} as a target ({vcps.size} classes, min {vcps.min()} samples).")
     else:
         st.write(f"{ps_col} has low variance ({vcps.size if ps_col in df.columns else 0} classes, min {vcps.min() if ps_col in df.columns else 0} samples).")
 
@@ -158,7 +164,6 @@ if target_col:
     keep = [c for c in keep if c in df.columns]
     df_ml = df[keep].copy().dropna(subset=[target_col, major_head_col])
 
-    
     min_samples = min_samples_for_district if target_col == district_col else min_samples_for_ps
     class_counts = df_ml[target_col].value_counts()
     good_classes = class_counts[class_counts >= min_samples].index
@@ -343,7 +348,7 @@ if target_col:
         # Run NN training with timeout (5 minutes)
         nn_thread = threading.Thread(target=lambda: globals().update(nn_model=train_nn()))
         nn_thread.start()
-        nn_thread.join(timeout=180)  # Wait up to 3 minutes
+        nn_thread.join(timeout=300)  # Wait up to 5 minutes
         if nn_thread.is_alive():
             st.error("❌ Neural Network training timed out after 5 minutes.")
             logging.error("Neural Network training timed out after 5 minutes.")
@@ -384,9 +389,25 @@ if target_col:
         if model:
             try:
                 feat_imp = pd.Series(model.feature_importances_, index=X.columns).sort_values(ascending=False)
-                fig_feat = px.bar(x=feat_imp[:10].values, y=feat_imp[:10].index, orientation='h',
-                                  title=f"Top Features Influencing {target_col} (RF)",
-                                  labels={'x': 'Importance', 'y': 'Feature'})
+                fig_feat = px.bar(
+                    x=feat_imp[:10].values,
+                    y=feat_imp[:10].index,
+                    orientation='h',
+                    title=f"Top Features Influencing {target_col} (RandomForest)",
+                    labels={'x': 'Importance', 'y': 'Feature'},
+                    color=feat_imp[:10].values,
+                    color_continuous_scale=PROFESSIONAL_PALETTE
+                )
+                fig_feat.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='black',
+                    font_color='#333333',
+                    title_font_color='#FF3D00',
+                    xaxis_title="Importance",
+                    yaxis_title="Feature",
+                    xaxis=dict(showgrid=True, gridcolor='#E0E0E0'),
+                    yaxis=dict(showgrid=True, gridcolor='#E0E0E0')
+                )
                 st.plotly_chart(fig_feat)
             except Exception as ex:
                 st.warning(f"⚠️ RandomForest feature importance plot failed: {ex}")
@@ -397,9 +418,25 @@ if target_col:
             try:
                 perm_importance = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=42)
                 perm_imp_df = pd.Series(perm_importance.importances_mean, index=X.columns).sort_values(ascending=False)
-                fig_perm = px.bar(x=perm_imp_df[:10].values, y=perm_imp_df[:10].index, orientation='h',
-                                  title=f"Top Features Influencing {target_col} (NN - Permutation Importance)",
-                                  labels={'x': 'Importance', 'y': 'Feature'})
+                fig_perm = px.bar(
+                    x=perm_imp_df[:10].values,
+                    y=perm_imp_df[:10].index,
+                    orientation='h',
+                    title=f"Top Features Influencing {target_col} (Neural Network - Permutation Importance)",
+                    labels={'x': 'Importance', 'y': 'Feature'},
+                    color=perm_imp_df[:10].values,
+                    color_continuous_scale=PROFESSIONAL_PALETTE
+                )
+                fig_perm.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='black',
+                    font_color='#333333',
+                    title_font_color='#FF3D00',
+                    xaxis_title="Importance",
+                    yaxis_title="Feature",
+                    xaxis=dict(showgrid=True, gridcolor='#E0E0E0'),
+                    yaxis=dict(showgrid=True, gridcolor='#E0E0E0')
+                )
                 st.plotly_chart(fig_perm)
             except Exception as ex:
                 st.warning(f"⚠️ Neural Network permutation importance failed: {ex}")
@@ -415,11 +452,54 @@ if target_col:
                 top_encoded_labels = unique_labels[top_labels_positions]
                 top_display = le_dict[target_col].inverse_transform(top_encoded_labels)
                 cm_small = cm[np.ix_(top_labels_positions, top_labels_positions)]
+
+                # Professional color scale for confusion matrix
+                PROFESSIONAL_COLORSCALE = [
+                    [0, '#F5F5F5'],    # Light gray background
+                    [0.2, '#E0E0E0'],  # Medium gray
+                    [0.4, '#B0BEC5'],  # Light blue-gray
+                    [0.6, '#78909C'],  # Medium blue-gray
+                    [0.8, '#455A64'],  # Dark blue-gray
+                    [1.0, '#263238']   # Very dark blue-gray
+                ]
+
                 fig_cm = go.Figure(data=go.Heatmap(
-                    z=cm_small, x=top_display, y=top_display, colorscale='Blues',
-                    text=cm_small, texttemplate="%{text}", textfont={"size": 10}))
-                fig_cm.update_layout(title=f"Confusion Matrix for {target_col} (Top classes)",
-                                     xaxis_title=target_col, yaxis_title=target_col)
+                    z=cm_small,
+                    x=top_display,
+                    y=top_display,
+                    colorscale=PROFESSIONAL_COLORSCALE,
+                    text=cm_small,
+                    texttemplate="%{text}",
+                    textfont={"size": 12, "color": "white"},
+                    colorbar=dict(
+                        title="Count",
+                        titleside="right",
+                        titlefont=dict(size=14, color='#263238'),
+                        tickfont=dict(size=12, color='#263238')
+                    ),
+                    zmin=0,
+                    zmax=cm_small.max() if cm_small.max() > 0 else 1
+                ))
+                fig_cm.update_layout(
+                    title=f"Confusion Matrix for {target_col} (Top 10 Classes)",
+                    title_font=dict(size=16, color='#263238'),
+                    xaxis_title=f"Predicted {target_col}",
+                    yaxis_title=f"Actual {target_col}",
+                    xaxis=dict(
+                        tickangle=45,
+                        tickfont=dict(size=12, color='#263238'),
+                        titlefont=dict(size=14, color='#263238')
+                    ),
+                    yaxis=dict(
+                        tickfont=dict(size=12, color='#263238'),
+                        titlefont=dict(size=14, color='#263238')
+                    ),
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    margin=dict(l=50, r=50, t=100, b=100),
+                    width=800,
+                    height=600
+                )
                 st.plotly_chart(fig_cm)
             except Exception as ex:
                 st.warning(f"⚠️ Confusion matrix plot failed: {ex}")
@@ -487,8 +567,10 @@ if user_input and major_head_col:
                 st.download_button("Download Frequency Predictions (CSV)", data=out.getvalue(),
                                    file_name=f"freq_predictions_{chosen_crime.replace(' ', '_')}.csv", mime="text/csv")
 
+                # Updated bar color to #FFD300
                 fig_freq = px.bar(freq_df, x='Proportion', y=freq_target_col, orientation='h',
-                                  title=f"Top {freq_target_col} for {chosen_crime.title()}")
+                                  title=f"Top {freq_target_col} probable for reporting a {chosen_crime.title()} case",
+                                  color_discrete_sequence=['#FF3D00'])
                 st.plotly_chart(fig_freq)
         except Exception as ex:
             st.error(f"❌ Frequency-based prediction failed: {ex}")
