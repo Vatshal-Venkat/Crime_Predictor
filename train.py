@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,7 +9,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.inspection import permutation_importance
 from xgboost import XGBClassifier
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Input
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization, Input
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.utils import to_categorical
 from scikeras.wrappers import KerasClassifier
@@ -21,54 +22,52 @@ import io
 import os
 import tensorflow as tf
 import threading
-import time
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.ensemble import RandomForestClassifier as RF
+from sklearn.utils import resample
+import uuid
 
 # Suppress oneDNN custom operations message
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
-# Professional color palette starting with #FF3D00
-PROFESSIONAL_PALETTE = [
-    '#FF3D00',  # Vibrant orange (primary)
-    '#FF7043',  # Light orange
-    '#FF8F00',  # Deep orange
-    '#FFB300',  # Amber
-    '#FFCA28',  # Light amber
-    '#FFA000',  # Orange accent
-]
+# Professional color palette
+PROFESSIONAL_PALETTE = ['#FF3D00', '#FF7043', '#FF8F00', '#FFB300', '#FFCA28', '#FFA000']
 
 # Logging setup
 logging.basicConfig(filename='crime_predictor.log', level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logging.info("Streamlit app started.")
 
-# Streamlit app title and description
-st.title("Crime Location Predictor")
+# Streamlit app configuration
+st.set_page_config(page_title="Crime Predictor", layout="wide")
+st.title("Crime Predictor Dashboard")
 st.markdown("""
-This application predicts likely crime locations based on crime data using RandomForest, XGBoost, and an optimized Neural Network. Upload an Excel file, explore visualizations, and predict locations for specific crime types.
+This application predicts crime locations and case closure probabilities based on FIR data.
+Upload an Excel file to analyze historical cases and predict outcomes for new FIRs.
 """)
 
-# --- File Upload ---
-uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx"])
-
-
-try:
-    df = pd.read_excel(uploaded_file)
-    st.success(f"✅ Data Loaded. Shape: {df.shape}")
-    logging.info(f"Data loaded successfully: {df.shape}")
-except Exception as e:
-    st.error(f"❌ Failed to read uploaded file: {e}")
-    logging.exception("Excel Read Error")
-    st.stop()
-
-# --- Debug: Raw Data ---
-#st.write(f"Unique FIR_MONTH values before cleaning: \n{df['FIR_MONTH'].value_counts(dropna=False)}")
+# --- File Upload in Sidebar ---
+with st.sidebar:
+    st.header("Data Upload")
+    uploaded_file = st.file_uploader("Upload your Excel file (e.g., FIR_data_2022.xlsx)", type=["xlsx"], key="file_uploader")
+    if uploaded_file:
+        try:
+            df = pd.read_excel(uploaded_file)
+            st.success(f"✅ Data Loaded. Shape: {df.shape}")
+            logging.info(f"Data loaded successfully: {df.shape}")
+            if st.checkbox("Show first few rows of data", key="preview_data"):
+                st.dataframe(df.head())
+        except Exception as e:
+            st.error(f"❌ Failed to read uploaded file: {e}")
+            logging.exception("Excel Read Error")
+            st.stop()
+    else:
+        st.info("Please upload an Excel file to proceed.")
+        st.stop()
 
 # --- Normalize Column Names ---
 df.columns = df.columns.str.strip().str.upper()
-
-# Show raw data option
-if st.checkbox("Show first few rows of data"):
-    st.dataframe(df.head())
 
 # --- Drop Unwanted Columns ---
 drop_cols = ['FIR_NO', 'ACTS_SEC', 'ALTERATION_DT', 'CS_DATE',
@@ -104,29 +103,28 @@ if 'FIR_MONTH' in df.columns:
 cols_set = set(df.columns)
 
 def find_col(candidates):
-    """Find the first matching column from a list of possible names."""
     for c in candidates:
         if c and c.upper() in cols_set:
             return c.upper()
     return None
 
-# Detect important columns
 major_head_col = find_col(['MAJOR_HEAD', 'CRIME TYPE', 'CRIME', 'OFFENCE', 'OFFENCE TYPE'])
 district_col = find_col(['DISTRICT'])
 minor_head_col = find_col(['MINOR_HEAD'])
-ps_col = find_col(['PS', 'POLICE STATION', 'POLICE_STATION', 'POLICE_STN'])
+ps_col = find_col(['PS', 'POLICE STATION', 'POLICE_STN'])
+disp_col = find_col(['TYPE_OF_DISP', 'DISPOSITION', 'DISPOSAL_TYPE', 'FINAL_DISP'])
 
 if not major_head_col:
-    st.error(f"❌ Could not find a crime type column (e.g., 'MAJOR_HEAD', 'CRIME TYPE'). Columns present: {list(df.columns)}")
+    st.error(f"❌ Could not find a crime type column. Columns present: {list(df.columns)}")
     logging.error(f"Could not find crime type column. Columns present: {list(df.columns)}")
     st.stop()
 
 # --- Clean Text Fields ---
-for c in [major_head_col, ps_col, district_col, minor_head_col]:
+for c in [major_head_col, ps_col, district_col, minor_head_col, disp_col]:
     if c and c in df.columns:
         df[c] = df[c].astype(str).str.strip().str.title()
 
-# --- Target Selection for ML ---
+# --- Target Selection for Location Prediction ---
 target_col = None
 min_samples_for_district = 5
 min_samples_for_ps = 3
@@ -143,11 +141,11 @@ if target_col is None and ps_col:
     vcps = df[ps_col].value_counts()
     if vcps.size >= 2 and vcps.min() >= min_samples_for_ps:
         target_col = ps_col
-        st.write(f"📊 Using {ps_col} as a target ({vcps.size} classes, min {vcps.min()} samples).")
+        st.write(f"📊 Using {ps_col} as target ({vcps.size} classes, min {vcps.min()} samples).")
     else:
         st.write(f"{ps_col} has low variance ({vcps.size if ps_col in df.columns else 0} classes, min {vcps.min() if ps_col in df.columns else 0} samples).")
 
-# --- ML Training ---
+# --- ML Training for Location Prediction ---
 model = None
 xgb_model = None
 nn_model = None
@@ -158,11 +156,11 @@ y = None
 df_ml = None
 
 if target_col:
-    st.subheader("Training Machine Learning Models")
+    st.subheader("Training Location Prediction Models")
     keep = [target_col, major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR',
-            'CASE_STAGE', 'TYPE_OF_DISP', 'GRAVE', 'OCCURENCE_PLACE']
+            'CASE_STAGE', disp_col, 'GRAVE', 'OCCURENCE_PLACE']
     keep = [c for c in keep if c in df.columns]
-    df_ml = df[keep].copy().dropna(subset=[target_col, major_head_col])
+    df_ml = df[keep].copy().dropna(subset=[target_col])
 
     min_samples = min_samples_for_district if target_col == district_col else min_samples_for_ps
     class_counts = df_ml[target_col].value_counts()
@@ -174,13 +172,7 @@ if target_col:
         st.warning("⚠️ Not enough distinct classes to train ML model.")
         logging.warning("Not enough classes for ML training.")
     else:
-        # --- Initial NaN Check ---
-        nan_counts = df_ml.isna().sum()
-        if nan_counts.any():
-            st.warning(f"NaN counts in df_ml before processing:\n{nan_counts[nan_counts > 0]}")
-            logging.info(f"NaN counts in df_ml before processing:\n{nan_counts[nan_counts > 0]}")
-
-        # --- Impute NaN for All Columns ---
+        # --- Impute NaN ---
         for col in df_ml.columns:
             if df_ml[col].isna().any():
                 if df_ml[col].dtype in ['object', 'category']:
@@ -197,73 +189,36 @@ if target_col:
                       6:'Summer', 7:'Summer', 8:'Summer', 9:'Monsoon', 10:'Monsoon',
                       11:'Monsoon', 12:'Winter'}
         if 'FIR_MONTH' in df_ml.columns:
-            nan_before = df_ml['FIR_MONTH'].isna().sum()
             df_ml['SEASON'] = df_ml['FIR_MONTH'].map(season_map).fillna('Unknown')
             st.write("Added SEASON feature.")
-            logging.info(f"Added SEASON feature. FIR_MONTH NaN before mapping: {nan_before}")
-        if major_head_col in df_ml.columns and 'GRAVE' in df_ml.columns:
-            df_ml['CRIME_GRAVE_INTERACT'] = df_ml[major_head_col].astype(str) + '_' + df_ml['GRAVE'].astype(str)
-            df_ml['CRIME_GRAVE_INTERACT'] = df_ml['CRIME_GRAVE_INTERACT'].fillna('Unknown_Unknown')
-            st.write("Added CRIME_GRAVE_INTERACT feature.")
-            logging.info("Added CRIME_GRAVE_INTERACT feature.")
-
-        # --- Check NaN After Feature Engineering ---
-        nan_counts = df_ml.isna().sum()
-        if nan_counts.any():
-            st.error(f"❌ NaN values detected after feature engineering:\n{nan_counts[nan_counts > 0]}")
-            logging.error(f"NaN values after feature engineering:\n{nan_counts[nan_counts > 0]}")
-            st.stop()
+            logging.info("Added SEASON feature.")
+        if major_head_col in df_ml.columns and disp_col in df_ml.columns:
+            df_ml['CRIME_DISP_INTERACT'] = df_ml[major_head_col].astype(str) + '_' + df_ml[disp_col].astype(str)
+            df_ml['CRIME_DISP_INTERACT'] = df_ml['CRIME_DISP_INTERACT'].fillna('Unknown_Unknown')
+            st.write("Added CRIME_DISP_INTERACT feature.")
+            logging.info("Added CRIME_DISP_INTERACT feature.")
 
         # --- Label Encoding ---
         cat_cols = df_ml.select_dtypes(include=['object', 'category']).columns.tolist()
-        if df_ml[target_col].dtype == 'object' or df_ml[target_col].dtype.name == 'category':
-            cat_cols = [c for c in cat_cols if c != target_col]
-
+        cat_cols = [c for c in cat_cols if c != target_col]
         for col in cat_cols:
             le = LabelEncoder()
             df_ml[col] = le.fit_transform(df_ml[col].astype(str))
             le_dict[col] = le
-
         target_le = LabelEncoder()
         df_ml[target_col] = target_le.fit_transform(df_ml[target_col].astype(str))
         le_dict[target_col] = target_le
-
-        # --- Check NaN After Label Encoding ---
-        nan_counts = df_ml.isna().sum()
-        if nan_counts.any():
-            st.error(f"❌ NaN values detected after label encoding:\n{nan_counts[nan_counts > 0]}")
-            logging.error(f"NaN values after label encoding:\n{nan_counts[nan_counts > 0]}")
-            st.stop()
 
         # --- Train/Test Split ---
         X = df_ml.drop(columns=[target_col])
         y = df_ml[target_col]
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-        # --- Check NaN in X_train and X_test ---
-        nan_train = X_train.isna().sum()
-        nan_test = X_test.isna().sum()
-        if nan_train.any() or nan_test.any():
-            st.error(f"❌ NaN values detected in X_train:\n{nan_train[nan_train > 0]}\nX_test:\n{nan_test[nan_test > 0]}")
-            logging.error(f"NaN in X_train:\n{nan_train[nan_train > 0]}\nX_test:\n{nan_test[nan_test > 0]}")
-            st.stop()
-
-        # --- Standardize Features for Neural Network ---
+        # --- Standardize Features ---
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         joblib.dump(scaler, 'scaler.pkl')
-
-        # --- Validate Scaled Data ---
-        if np.any(np.isnan(X_train_scaled)) or np.any(np.isnan(X_test_scaled)):
-            nan_cols_train = np.where(np.any(np.isnan(X_train_scaled), axis=0))[0]
-            nan_cols_test = np.where(np.any(np.isnan(X_test_scaled), axis=0))[0]
-            st.error(f"❌ NaN values detected in scaled data. Columns with NaN in X_train_scaled: {X.columns[nan_cols_train].tolist()}. Columns with NaN in X_test_scaled: {X.columns[nan_cols_test].tolist()}")
-            logging.error(f"NaN in X_train_scaled columns: {X.columns[nan_cols_train].tolist()}. NaN in X_test_scaled columns: {X.columns[nan_cols_test].tolist()}")
-            st.stop()
-        else:
-            st.info("✅ No NaN values in scaled data.")
-            logging.info("No NaN values in scaled data.")
 
         # --- RandomForest Training ---
         try:
@@ -297,17 +252,19 @@ if target_col:
             logging.exception("XGBoost error")
             xgb_model = None
 
-        # --- Neural Network Training with Timeout ---
+        # --- Neural Network Training for Location ---
         def train_nn():
             try:
-                st.write("Training Neural Network...")
+                st.write("Training Neural Network for Location...")
                 tf.compat.v1.reset_default_graph()
-                def create_model(neurons=64, layers=2, dropout_rate=0.2, learning_rate=0.001):
+                def create_model(neurons=128, layers=2, dropout_rate=0.3, learning_rate=0.001):
                     model = Sequential([
                         Input(shape=(X_train.shape[1],)),
                         Dense(neurons, activation='relu'),
+                        BatchNormalization(),
                         Dropout(dropout_rate),
                         *[Dense(neurons // 2, activation='relu') for _ in range(layers - 1)],
+                        *[BatchNormalization() for _ in range(layers - 1)],
                         *[Dropout(dropout_rate) for _ in range(layers - 1)],
                         Dense(len(np.unique(y)), activation='softmax')
                     ])
@@ -318,9 +275,9 @@ if target_col:
 
                 nn_model = KerasClassifier(model=create_model, verbose=0)
                 param_grid = {
-                    'model__neurons': [64],
+                    'model__neurons': [128],
                     'model__layers': [2],
-                    'model__dropout_rate': [0.2],
+                    'model__dropout_rate': [0.3],
                     'model__learning_rate': [0.001],
                     'batch_size': [32],
                     'epochs': [50]
@@ -345,10 +302,9 @@ if target_col:
                 logging.exception("Neural Network error")
                 return None
 
-        # Run NN training with timeout (5 minutes)
         nn_thread = threading.Thread(target=lambda: globals().update(nn_model=train_nn()))
         nn_thread.start()
-        nn_thread.join(timeout=300)  # Wait up to 5 minutes
+        nn_thread.join(timeout=300)
         if nn_thread.is_alive():
             st.error("❌ Neural Network training timed out after 5 minutes.")
             logging.error("Neural Network training timed out after 5 minutes.")
@@ -367,7 +323,7 @@ if target_col:
             if scaler:
                 joblib.dump(scaler, 'scaler.pkl')
             if model or xgb_model or nn_model:
-                st.success("Neural Network trained successfully.")
+                st.success("✅ Models saved successfully.")
                 logging.info("Models, encoders, and scaler saved.")
         except Exception as ex:
             st.error(f"❌ Failed to save models: {ex}")
@@ -400,7 +356,7 @@ if target_col:
                 )
                 fig_feat.update_layout(
                     plot_bgcolor='white',
-                    paper_bgcolor='black',
+                    paper_bgcolor='white',
                     font_color='#333333',
                     title_font_color='#FF3D00',
                     xaxis_title="Importance",
@@ -429,7 +385,7 @@ if target_col:
                 )
                 fig_perm.update_layout(
                     plot_bgcolor='white',
-                    paper_bgcolor='black',
+                    paper_bgcolor='white',
                     font_color='#333333',
                     title_font_color='#FF3D00',
                     xaxis_title="Importance",
@@ -453,14 +409,9 @@ if target_col:
                 top_display = le_dict[target_col].inverse_transform(top_encoded_labels)
                 cm_small = cm[np.ix_(top_labels_positions, top_labels_positions)]
 
-                # Professional color scale for confusion matrix
                 PROFESSIONAL_COLORSCALE = [
-                    [0, '#F5F5F5'],    # Light gray background
-                    [0.2, '#E0E0E0'],  # Medium gray
-                    [0.4, '#B0BEC5'],  # Light blue-gray
-                    [0.6, '#78909C'],  # Medium blue-gray
-                    [0.8, '#455A64'],  # Dark blue-gray
-                    [1.0, '#263238']   # Very dark blue-gray
+                    [0, '#F5F5F5'], [0.2, '#E0E0E0'], [0.4, '#B0BEC5'],
+                    [0.6, '#78909C'], [0.8, '#455A64'], [1.0, '#263238']
                 ]
 
                 fig_cm = go.Figure(data=go.Heatmap(
@@ -471,29 +422,14 @@ if target_col:
                     text=cm_small,
                     texttemplate="%{text}",
                     textfont={"size": 12, "color": "white"},
-                    colorbar=dict(
-                        title="Count",
-                        titleside="right",
-                        titlefont=dict(size=14, color='#263238'),
-                        tickfont=dict(size=12, color='#263238')
-                    ),
-                    zmin=0,
-                    zmax=cm_small.max() if cm_small.max() > 0 else 1
+                    colorbar=dict(title="Count", titleside="right", titlefont=dict(size=14, color='#263238'))
                 ))
                 fig_cm.update_layout(
                     title=f"Confusion Matrix for {target_col} (Top 10 Classes)",
-                    title_font=dict(size=16, color='#263238'),
                     xaxis_title=f"Predicted {target_col}",
                     yaxis_title=f"Actual {target_col}",
-                    xaxis=dict(
-                        tickangle=45,
-                        tickfont=dict(size=12, color='#263238'),
-                        titlefont=dict(size=14, color='#263238')
-                    ),
-                    yaxis=dict(
-                        tickfont=dict(size=12, color='#263238'),
-                        titlefont=dict(size=14, color='#263238')
-                    ),
+                    xaxis=dict(tickangle=45, tickfont=dict(size=12, color='#263238')),
+                    yaxis=dict(tickfont=dict(size=12, color='#263238')),
                     plot_bgcolor='white',
                     paper_bgcolor='white',
                     margin=dict(l=50, r=50, t=100, b=100),
@@ -519,166 +455,255 @@ except Exception as ex:
     st.warning(f"⚠️ Treemap visualization failed: {ex}")
     logging.warning(f"Treemap visualization failed: {ex}")
 
-# --- Prediction Section ---
-st.subheader("🔮 Predict Crime Location")
-user_input_raw = st.text_input("Enter the crime type:", "")
-user_input = user_input_raw.strip().lower()
+# --- Disposition Model Training ---
+disp_model = None
+disp_le = None
+disp_labels = None
 
-if user_input and major_head_col:
-    # Prepare crime list for fuzzy matching
-    if model and major_head_col in le_dict:
-        crime_choices = [str(c).lower() for c in le_dict[major_head_col].classes_]
+if disp_col:
+    df_disp = df[[major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR', 'OCCURENCE_PLACE', disp_col]].copy().dropna(subset=[disp_col])
+    valid_dispositions = ['Police Station', 'Court', 'Self-Compromise', 'Withdraw']
+    df_disp = df_disp[df_disp[disp_col].isin(valid_dispositions)]
+    
+    if df_disp.shape[0] >= 50 and df_disp[disp_col].nunique() >= 2:
+        # Text feature engineering
+        text_column_name = "_SIM_TEXT"
+        df[text_column_name] = df[[major_head_col, minor_head_col, 'OCCURENCE_PLACE']].apply(lambda r: " || ".join(r.astype(str)), axis=1)
+        if 'tfidf_vect' not in st.session_state:
+            vect = TfidfVectorizer(max_features=5000, stop_words='english')
+            st.session_state['tfidf_matrix'] = vect.fit_transform(df[text_column_name].astype(str))
+            st.session_state['tfidf_vect'] = vect
+        
+        X_disp = pd.DataFrame()
+        X_disp['FIR_MONTH'] = df_disp['FIR_MONTH'].astype(float).fillna(1)
+        X_disp['FIR_YEAR'] = df_disp['FIR_YEAR'].astype(float).fillna(df_disp['FIR_YEAR'].median())
+        
+        arr = st.session_state['tfidf_matrix'].toarray()[df_disp.index]
+        k = min(32, arr.shape[1])
+        chunk_size = max(1, arr.shape[1] // k)
+        agg = np.array([arr[:, i:i+chunk_size].mean(axis=1) for i in range(0, arr.shape[1], chunk_size)]).T
+        for i in range(min(16, agg.shape[1])):
+            X_disp[f"txt_{i}"] = agg[:, i]
+        
+        y_disp = df_disp[disp_col]
+        disp_le = LabelEncoder()
+        y_disp_encoded = disp_le.fit_transform(y_disp)
+        le_dict[disp_col] = disp_le
+        disp_labels = disp_le.classes_
+        
+        # Balance classes
+        combined = X_disp.copy()
+        combined[disp_col] = y_disp
+        max_count = combined[disp_col].value_counts().max()
+        dfs = [resample(grp, replace=True, n_samples=max_count, random_state=42) if len(grp) < max_count else grp for cls, grp in combined.groupby(disp_col)]
+        balanced = pd.concat(dfs, ignore_index=True)
+        y_disp_bal = balanced[disp_col]
+        X_disp_bal = balanced.drop(columns=[disp_col])
+        y_disp_bal_encoded = disp_le.transform(y_disp_bal)
+        
+        # Train disposition neural network
+        def create_disp_nn():
+            model = Sequential([
+                Input(shape=(X_disp_bal.shape[1],)),
+                Dense(256, activation='relu'),
+                BatchNormalization(),
+                Dropout(0.4),
+                Dense(128, activation='relu'),
+                BatchNormalization(),
+                Dropout(0.4),
+                Dense(64, activation='relu'),
+                Dense(len(np.unique(y_disp_encoded)), activation='softmax')
+            ])
+            model.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+            return model
+        
+        disp_model = KerasClassifier(model=create_disp_nn, epochs=100, batch_size=32, verbose=0)
+        disp_model.fit(X_disp_bal, y_disp_bal_encoded)
+        disp_accuracy = accuracy_score(y_disp_bal_encoded, disp_model.predict(X_disp_bal))
+        st.success(f"✅ Disposition Neural Network Accuracy: {disp_accuracy:.3f}")
+        disp_model.model_.save('disposition_model_nn.h5')
     else:
-        crime_choices = df[major_head_col].astype(str).str.lower().unique().tolist()
-
-    if not crime_choices:
-        st.error("❌ No crime types available in the dataset.")
-        logging.error("No crime types available in the dataset.")
-        st.stop()
-
-    best_match, score = process.extractOne(user_input, crime_choices) if crime_choices else (None, 0)
-    chosen_crime = best_match if best_match and score >= 70 else user_input
-
-    if best_match and score >= 70:
-        st.write(f"Interpreted as: **{chosen_crime.title()}** (confidence {score})")
-        logging.info(f"Fuzzy match: {chosen_crime} (score: {score})")
-    else:
-        st.warning("⚠️ No close fuzzy match found — proceeding with exact input.")
-        logging.warning("No fuzzy match found.")
-
-    # --- Frequency-Based Prediction (Always Available) ---
-    freq_target_col = ps_col if ps_col else district_col
-    if freq_target_col:
-        try:
-            filtered = df[df[major_head_col].astype(str).str.lower().str.contains(chosen_crime, na=False)]
-            if filtered.empty:
-                st.warning(f"⚠️ No historical records found for '{chosen_crime.title()}' in frequency analysis.")
-                logging.warning(f"No records for '{chosen_crime}' in frequency analysis.")
-            else:
-                counts = filtered[freq_target_col].value_counts(normalize=True).head(10)
-                freq_df = counts.reset_index()
-                freq_df.columns = [freq_target_col, 'Proportion']
-                st.subheader(f"📊 Frequency-based Top {freq_target_col} for {chosen_crime.title()}")
-                st.dataframe(freq_df)
-                logging.info(f"Frequency analysis completed for {freq_target_col}")
-
-                out = io.StringIO()
-                freq_df.to_csv(out, index=False)
-                st.download_button("Download Frequency Predictions (CSV)", data=out.getvalue(),
-                                   file_name=f"freq_predictions_{chosen_crime.replace(' ', '_')}.csv", mime="text/csv")
-
-                # Updated bar color to #FFD300
-                fig_freq = px.bar(freq_df, x='Proportion', y=freq_target_col, orientation='h',
-                                  title=f"Top {freq_target_col} probable for reporting a {chosen_crime.title()} case",
-                                  color_discrete_sequence=['#FF3D00'])
-                st.plotly_chart(fig_freq)
-        except Exception as ex:
-            st.error(f"❌ Frequency-based prediction failed: {ex}")
-            logging.exception("Frequency-based prediction error")
-
-    # --- ML Predictions (If Models Available) ---
-    if model and le_dict and major_head_col in le_dict and scaler is not None:
-        try:
-            crime_classes_lower = [c.lower() for c in le_dict[major_head_col].classes_]
-            if chosen_crime not in crime_classes_lower:
-                available_crimes = le_dict[major_head_col].classes_[:10]
-                st.warning(f"⚠️ Crime '{chosen_crime.title()}' not found in trained classes. Available sample: {', '.join(available_crimes)}")
-                logging.warning(f"Crime '{chosen_crime}' not found in trained classes.")
-            else:
-                # Build prediction sample
-                sample_dict = {}
-                missing_mode_cols = []
-                for col in X.columns:
-                    if col == major_head_col:
-                        sample_dict[col] = None
-                        continue
-                    if col in df_ml.columns:
-                        mode_values = df_ml[col].mode()
-                        if not mode_values.empty:
-                            sample_dict[col] = mode_values.iloc[0]
-                        else:
-                            missing_mode_cols.append(col)
-                            logging.warning(f"Empty mode for column: {col}")
-                            sample_dict[col] = df_ml[col].dropna().iloc[0] if not df_ml[col].dropna().empty else 0
-                    else:
-                        sample_dict[col] = 0
-                        logging.warning(f"Column {col} not in dataset; using default value 0.")
-
-                if missing_mode_cols:
-                    st.warning(f"⚠️ Columns with no mode detected: {', '.join(missing_mode_cols)}")
-
-                # Set encoded crime
-                encoded_val = le_dict[major_head_col].transform([le_dict[major_head_col].classes_[crime_classes_lower.index(chosen_crime)]])[0]
-                sample_dict[major_head_col] = encoded_val
-                sample = pd.DataFrame([sample_dict], columns=X.columns)
-
-                # Ensure categorical columns are encoded
-                for col in sample.columns:
-                    if col in le_dict and sample[col].dtype == object:
-                        try:
-                            sample[col] = le_dict[col].transform([sample[col].astype(str)])[0]
-                        except Exception as e:
-                            st.warning(f"⚠️ Failed to encode column {col}: {e}. Using default value 0.")
-                            logging.warning(f"Failed to encode column {col}: {e}")
-                            sample[col] = 0
-
-                # Debug output
-                st.write("🧩 Prepared Sample for Prediction:")
-                st.dataframe(sample)
-                logging.info(f"Sample DataFrame for prediction: {sample.to_dict()}")
-
-                # Predict with RandomForest
-                try:
-                    probs = model.predict_proba(sample)[0]
-                    top_idx = np.argsort(probs)[::-1][:5]
-                    top_locs = le_dict[target_col].inverse_transform(model.classes_[top_idx])
-                    st.subheader(f"ML Prediction (RandomForest) for {target_col}")
-                    for i, loc in enumerate(top_locs, start=1):
-                        st.write(f"{i}. {loc} (Probability: {probs[top_idx[i-1]]:.3f})")
-                    logging.info(f"RandomForest prediction successful: {top_locs.tolist()}")
-                except Exception as e:
-                    st.error(f"❌ RandomForest Prediction Error: {e}")
-                    logging.error(f"RandomForest Prediction Error: {e}")
-
-                # Predict with XGBoost
-                if xgb_model:
-                    try:
-                        xgb_probs = xgb_model.predict_proba(sample)[0]
-                        xgb_top_idx = np.argsort(xgb_probs)[::-1][:5]
-                        xgb_top_locs = le_dict[target_col].inverse_transform(xgb_model.classes_[xgb_top_idx])
-                        st.subheader(f"ML Prediction (XGBoost) for {target_col}")
-                        for i, loc in enumerate(xgb_top_locs, start=1):
-                            st.write(f"{i}. {loc} (Probability: {xgb_probs[xgb_top_idx[i-1]]:.3f})")
-                        logging.info(f"XGBoost prediction successful: {xgb_top_locs.tolist()}")
-                    except Exception as e:
-                        st.error(f"❌ XGBoost Prediction Error: {e}")
-                        logging.error(f"XGBoost Prediction Error: {e}")
-
-                # Predict with Neural Network
-                if nn_model:
-                    try:
-                        sample_scaled = scaler.transform(sample)
-                        if np.any(np.isnan(sample_scaled)):
-                            st.error("❌ NaN values detected in scaled prediction sample.")
-                            logging.error("NaN values in scaled prediction sample.")
-                        else:
-                            nn_probs = nn_model.predict_proba(sample_scaled)[0]
-                            nn_top_idx = np.argsort(nn_probs)[::-1][:5]
-                            nn_top_locs = le_dict[target_col].inverse_transform(np.arange(len(np.unique(y)))[nn_top_idx])
-                            st.subheader(f"ML Prediction (Neural Network) for {target_col}")
-                            for i, loc in enumerate(nn_top_locs, start=1):
-                                st.write(f"{i}. {loc} (Probability: {nn_probs[nn_top_idx[i-1]]:.3f})")
-                            logging.info(f"Neural Network prediction successful: {nn_top_locs.tolist()}")
-                    except Exception as e:
-                        st.error(f"❌ Neural Network Prediction Error: {e}")
-                        logging.error(f"Neural Network Prediction Error: {e}")
-        except Exception as ex:
-            st.error(f"❌ ML prediction setup failed: {ex}")
-            logging.exception("ML prediction setup error")
-    else:
-        st.info("⚠️ ML models not available. Showing frequency-based results only.")
+        st.warning("⚠️ Insufficient data for disposition model.")
+        logging.info("Not enough disposition-labeled data.")
 else:
-    st.info("👆 Enter a crime type above to predict its likely locations.")
+    st.warning("⚠️ No disposition column found.")
+    logging.info("No disposition column found.")
+
+# --- Prediction Section ---
+st.header("Predict Crime Location & Case Outcome")
+tab1, tab2 = st.tabs(["📍 Location Prediction", "📝 Lodge New FIR"])
+
+with tab1:
+    st.subheader("Predict Crime Location")
+    user_input = st.text_input("Enter Crime Type:", key="crime_type_input")
+    if user_input:
+        crime_choices = [str(c).lower() for c in le_dict[major_head_col].classes_]
+        best_match, score = process.extractOne(user_input.strip().lower(), crime_choices)
+        chosen_crime = best_match if score >= 70 else user_input.strip().lower()
+        if score >= 70:
+            st.write(f"Interpreted as: **{chosen_crime.title()}** (Confidence: {score}%)")
+        else:
+            st.warning("⚠️ No close match found. Using exact input.")
+        
+        # Frequency-based prediction
+        freq_target_col = ps_col if ps_col else district_col
+        if freq_target_col:
+            try:
+                filtered = df[df[major_head_col].astype(str).str.lower().str.contains(chosen_crime, na=False)]
+                if filtered.empty:
+                    st.warning(f"⚠️ No historical records for '{chosen_crime.title()}'.")
+                else:
+                    counts = filtered[freq_target_col].value_counts(normalize=True).head(5)
+                    freq_df = counts.reset_index()
+                    freq_df.columns = [freq_target_col, 'Proportion']
+                    st.subheader(f"Frequency-based Top {freq_target_col}")
+                    st.dataframe(freq_df)
+                    out = io.StringIO()
+                    freq_df.to_csv(out, index=False)
+                    st.download_button("Download Frequency Predictions", data=out.getvalue(),
+                                       file_name=f"freq_predictions_{chosen_crime.replace(' ', '_')}.csv")
+                    fig_freq = px.bar(freq_df, x='Proportion', y=freq_target_col, orientation='h',
+                                      title=f"Top {freq_target_col} for {chosen_crime.title()}",
+                                      color_discrete_sequence=['#FF3D00'])
+                    st.plotly_chart(fig_freq)
+            except Exception as ex:
+                st.error(f"❌ Frequency-based prediction failed: {ex}")
+                logging.exception("Frequency-based prediction error")
+
+        # ML predictions
+        if model and le_dict and major_head_col in le_dict:
+            try:
+                sample_dict = {col: df_ml[col].mode().iloc[0] if col in df_ml.columns else 0 for col in X.columns}
+                crime_classes_lower = [c.lower() for c in le_dict[major_head_col].classes_]
+                if chosen_crime in crime_classes_lower:
+                    sample_dict[major_head_col] = le_dict[major_head_col].transform([le_dict[major_head_col].classes_[crime_classes_lower.index(chosen_crime)]])[0]
+                sample = pd.DataFrame([sample_dict], columns=X.columns)
+                
+                # RandomForest prediction
+                probs = model.predict_proba(sample)[0]
+                top_idx = np.argsort(probs)[::-1][:5]
+                top_locs = le_dict[target_col].inverse_transform(model.classes_[top_idx])
+                st.subheader(f"RandomForest Prediction for {target_col}")
+                for i, loc in enumerate(top_locs, 1):
+                    st.write(f"{i}. {loc} (Probability: {probs[top_idx[i-1]]:.3f})")
+                
+                # XGBoost prediction
+                if xgb_model:
+                    xgb_probs = xgb_model.predict_proba(sample)[0]
+                    xgb_top_idx = np.argsort(xgb_probs)[::-1][:5]
+                    xgb_top_locs = le_dict[target_col].inverse_transform(xgb_model.classes_[xgb_top_idx])
+                    st.subheader(f"XGBoost Prediction for {target_col}")
+                    for i, loc in enumerate(xgb_top_locs, 1):
+                        st.write(f"{i}. {loc} (Probability: {xgb_probs[xgb_top_idx[i-1]]:.3f})")
+                
+                # Neural Network prediction
+                if nn_model:
+                    sample_scaled = scaler.transform(sample)
+                    nn_probs = nn_model.predict_proba(sample_scaled)[0]
+                    nn_top_idx = np.argsort(nn_probs)[::-1][:5]
+                    nn_top_locs = le_dict[target_col].inverse_transform(np.arange(len(np.unique(y)))[nn_top_idx])
+                    st.subheader(f"Neural Network Prediction for {target_col}")
+                    for i, loc in enumerate(nn_top_locs, 1):
+                        st.write(f"{i}. {loc} (Probability: {nn_probs[nn_top_idx[i-1]]:.3f})")
+                
+                fig = px.bar(x=probs[top_idx], y=top_locs, orientation='h',
+                             title=f"Top {target_col}s (RandomForest)", labels={'x': 'Probability', 'y': target_col},
+                             color_discrete_sequence=['#FF3D00'])
+                st.plotly_chart(fig)
+            except Exception as ex:
+                st.error(f"❌ ML prediction failed: {ex}")
+                logging.exception("ML prediction error")
+
+with tab2:
+    st.subheader("Lodge New FIR")
+    with st.form("new_fir_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            inp_major = st.text_input("Crime Type", key="fir_major")
+            inp_minor = st.text_input("Minor Head", key="fir_minor")
+            inp_place = st.text_input("Occurrence Place", key="fir_place")
+        with col2:
+            inp_month = st.number_input("Month (1-12)", min_value=1, max_value=12, value=1, key="fir_month")
+            inp_year = st.number_input("Year", min_value=2000, max_value=2030, value=2024, key="fir_year")
+            inp_brief = st.text_area("Brief Facts", key="fir_brief")
+        submit_fir = st.form_submit_button("Analyze & Predict")
+
+    if submit_fir:
+        new_fingerprint = " || ".join([inp_major, inp_minor, inp_place, inp_brief])
+        st.info("Analyzing similar cases and predicting case closure...")
+
+        # Find similar cases
+        def find_similar_cases(new_text, top_k=5):
+            results = []
+            try:
+                if 'tfidf_vect' in st.session_state:
+                    new_vec = st.session_state['tfidf_vect'].transform([new_text])
+                    sims = cosine_similarity(new_vec, st.session_state['tfidf_matrix'])[0]
+                    idxs = np.argsort(sims)[::-1][:top_k]
+                    for i in idxs:
+                        row = df.iloc[i].copy()
+                        row['_SIM_SCORE'] = float(sims[i])
+                        results.append(row)
+                else:
+                    tmp = df[df[major_head_col].astype(str).str.lower().str.contains(new_text.split("||")[0].strip().lower(), na=False)]
+                    for _, r in tmp.head(top_k).iterrows():
+                        r = r.copy()
+                        r['_SIM_SCORE'] = 1.0
+                        results.append(r)
+            except Exception as e:
+                logging.exception("Similarity computation failed.")
+            return results
+
+        similar = find_similar_cases(new_fingerprint)
+        if similar:
+            sim_df = pd.DataFrame(similar)
+            sim_df['Status'] = sim_df.apply(lambda r: 'Closed' if any(x in str(r.get(c, '')).lower() for c in ['CASE_STAGE', disp_col] for x in ['close', 'disposed', 'final', 'withdraw', 'compromise']) else 'Running', axis=1)
+            st.subheader("Similar Historical Cases")
+            display_cols = [c for c in [ps_col, district_col, major_head_col, minor_head_col, 'CASE_STAGE', disp_col, 'Status', '_SIM_SCORE'] if c in sim_df.columns or c == 'Status' or c == '_SIM_SCORE']
+            st.table(sim_df[display_cols].head())
+            status_counts = sim_df['Status'].value_counts()
+            cols = st.columns(len(status_counts))
+            for i, (k, v) in enumerate(status_counts.items()):
+                cols[i].metric(k, v)
+        
+        # Predict disposition
+        if disp_model:
+            X_sample = pd.DataFrame()
+            X_sample['FIR_MONTH'] = [float(inp_month)]
+            X_sample['FIR_YEAR'] = [float(inp_year)]
+            new_vec = st.session_state['tfidf_vect'].transform([new_fingerprint])
+            arr = new_vec.toarray()
+            k = min(32, arr.shape[1])
+            chunk_size = max(1, arr.shape[1] // k)
+            agg = np.array([arr[:, i:i+chunk_size].mean(axis=1) for i in range(0, arr.shape[1], chunk_size)]).T
+            for i in range(min(16, agg.shape[1])):
+                X_sample[f"txt_{i}"] = agg[:, i]
+            
+            try:
+                probs = disp_model.predict_proba(X_sample)[0]
+                disp_probs = {disp_le.classes_[i]: float(p) for i, p in enumerate(probs)}
+                st.subheader("Case Closure Probabilities")
+                fig = px.bar(x=list(disp_probs.values()), y=list(disp_probs.keys()), orientation='h',
+                             title="Closure Outcome Probabilities", labels={'x': 'Probability', 'y': 'Outcome'},
+                             color_discrete_sequence=['#FF3D00'])
+                st.plotly_chart(fig)
+                for k, v in disp_probs.items():
+                    st.write(f"{k}: {v*100:.1f}%")
+            except Exception as e:
+                st.error(f"❌ Disposition prediction failed: {e}")
+                logging.exception("Disposition prediction error")
+        else:
+            # Frequency-based fallback
+            filt = df[df[major_head_col].astype(str).str.lower().str.contains(inp_major.strip().lower(), na=False)]
+            if disp_col and not filt.empty:
+                freq = filt[disp_col].value_counts(normalize=True).head(4)
+                freq_df = freq.reset_index()
+                freq_df.columns = [disp_col, 'Proportion']
+                st.subheader("Historical Disposition Proportions")
+                st.dataframe(freq_df)
+                fig = px.bar(freq_df, x='Proportion', y=disp_col, orientation='h',
+                             title="Historical Closure Proportions", color_discrete_sequence=['#FF3D00'])
+                st.plotly_chart(fig)
 
 st.markdown("---")
 st.write("✅ Process completed. Check `crime_predictor.log` for detailed logs.")
