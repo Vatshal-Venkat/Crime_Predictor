@@ -41,14 +41,10 @@ logging.info("Streamlit app started.")
 # Streamlit app configuration
 st.set_page_config(page_title="Crime Predictor", layout="wide")
 st.title("Crime Predictor Dashboard")
-st.markdown("""
-This application predicts crime locations and case closure probabilities based on FIR data.
-Upload an Excel file to analyze historical cases and predict outcomes for new FIRs.
-""")
 
-# --- File Upload in Sidebar ---
+# --- Sidebar ---
 with st.sidebar:
-    st.header("Data Upload")
+    st.header("Data Upload & Info")
     uploaded_file = st.file_uploader("Upload your Excel file (e.g., FIR_data_2022.xlsx)", type=["xlsx"], key="file_uploader")
     if uploaded_file:
         try:
@@ -65,38 +61,33 @@ with st.sidebar:
         st.info("Please upload an Excel file to proceed.")
         st.stop()
 
-# --- Normalize Column Names ---
-df.columns = df.columns.str.strip().str.upper()
+    # Move blue and yellow info boxes to sidebar
+    df.columns = df.columns.str.strip().str.upper()
+    drop_cols = ['ACTS_SEC', 'ALTERATION_DT', 'CS_DATE',
+                 'TAKENONFILE_DATE', 'DISPOSAL_DT', 'BRIEF_FACTS']
+    df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors='ignore')
+    df = df.fillna('Unknown')
+    before = df.shape[0]
+    df = df.drop_duplicates()
+    st.info(f"Removed {before - df.shape[0]} duplicate rows. New shape: {df.shape}")
+    logging.info(f"Duplicates removed: {before - df.shape[0]} rows. New shape: {df.shape}")
 
-# --- Drop Unwanted Columns ---
-drop_cols = ['FIR_NO', 'ACTS_SEC', 'ALTERATION_DT', 'CS_DATE',
-             'TAKENONFILE_DATE', 'DISPOSAL_DT', 'BRIEF_FACTS']
-df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors='ignore')
-
-# --- Clean & Deduplicate ---
-df = df.fillna('Unknown')
-before = df.shape[0]
-df = df.drop_duplicates()
-st.info(f"Removed {before - df.shape[0]} duplicate rows. New shape: {df.shape}")
-logging.info(f"Duplicates removed: {before - df.shape[0]} rows. New shape: {df.shape}")
-
-# --- Clean Year and Month ---
-if 'FIR_YEAR' in df.columns:
-    df['FIR_YEAR'] = pd.to_numeric(df['FIR_YEAR'], errors='coerce')
-    df = df[df['FIR_YEAR'].between(2000, 2030) | df['FIR_YEAR'].isna()]
-    logging.info("FIR_YEAR validated.")
-if 'FIR_MONTH' in df.columns:
-    nan_before = df['FIR_MONTH'].isna().sum()
-    df['FIR_MONTH'] = pd.to_numeric(df['FIR_MONTH'], errors='coerce').clip(1, 12)
-    nan_after = df['FIR_MONTH'].isna().sum()
-    if nan_after > 0:
-        st.warning(f"Found {nan_after} NaN values in FIR_MONTH after conversion. Imputing with 1 (January).")
-        logging.info(f"Found {nan_after} NaN values in FIR_MONTH after conversion. Imputing with 1.")
-        df['FIR_MONTH'] = df['FIR_MONTH'].fillna(1)
-    if nan_before > 0 or nan_after > 0:
-        st.info(f"FIR_MONTH: {nan_before} NaN values before conversion, {nan_after} after conversion, all imputed.")
-        logging.info(f"FIR_MONTH: {nan_before} NaN before, {nan_after} after, all imputed.")
-    logging.info("FIR_MONTH validated.")
+    if 'FIR_YEAR' in df.columns:
+        df['FIR_YEAR'] = pd.to_numeric(df['FIR_YEAR'], errors='coerce')
+        df = df[df['FIR_YEAR'].between(2000, 2030) | df['FIR_YEAR'].isna()]
+        logging.info("FIR_YEAR validated.")
+    if 'FIR_MONTH' in df.columns:
+        nan_before = df['FIR_MONTH'].isna().sum()
+        df['FIR_MONTH'] = pd.to_numeric(df['FIR_MONTH'], errors='coerce').clip(1, 12)
+        nan_after = df['FIR_MONTH'].isna().sum()
+        if nan_after > 0:
+            st.warning(f"Found {nan_after} NaN values in FIR_MONTH after conversion. Imputing with 1 (January).")
+            logging.info(f"Found {nan_after} NaN values in FIR_MONTH after conversion. Imputing with 1.")
+            df['FIR_MONTH'] = df['FIR_MONTH'].fillna(1)
+        if nan_before > 0 or nan_after > 0:
+            st.info(f"FIR_MONTH: {nan_before} NaN values before conversion, {nan_after} after conversion, all imputed.")
+            logging.info(f"FIR_MONTH: {nan_before} NaN before, {nan_after} after, all imputed.")
+        logging.info("FIR_MONTH validated.")
 
 # --- Robust Column Detection ---
 cols_set = set(df.columns)
@@ -132,17 +123,17 @@ if district_col:
     vc = df[district_col].value_counts()
     if vc.size >= 2 and vc.min() >= min_samples_for_district:
         target_col = district_col
-        st.write(f"📊 Using {district_col} as target ({vc.size} classes, min {vc.min()} samples).")
+        st.sidebar.write(f"📊 Using {district_col} as target ({vc.size} classes, min {vc.min()} samples).")
     else:
-        st.write(f"{district_col} has low variance ({vc.size} classes, min {vc.min()} samples).")
+        st.sidebar.write(f"{district_col} has low variance ({vc.size} classes, min {vc.min()} samples).")
 
 if target_col is None and ps_col:
     vcps = df[ps_col].value_counts()
     if vcps.size >= 2 and vcps.min() >= min_samples_for_ps:
         target_col = ps_col
-        st.write(f"📊 Using {ps_col} as target ({vcps.size} classes, min {vcps.min()} samples).")
+        st.sidebar.write(f"📊 Using {ps_col} as target ({vcps.size} classes, min {vcps.min()} samples).")
     else:
-        st.write(f"{ps_col} has low variance ({vcps.size if ps_col in df.columns else 0} classes, min {vcps.min() if ps_col in df.columns else 0} samples).")
+        st.sidebar.write(f"{ps_col} has low variance ({vcps.size if ps_col in df.columns else 0} classes, min {vcps.min() if ps_col in df.columns else 0} samples).")
 
 # --- ML Training for Location Prediction ---
 model = None
@@ -221,7 +212,7 @@ if target_col:
 
         # --- RandomForest Training ---
         try:
-            st.write("Training RandomForest...")
+            st.write("Training RandomForest.")
             model = RandomForestClassifier(n_estimators=200, max_depth=14, random_state=42, n_jobs=-1)
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
@@ -235,7 +226,7 @@ if target_col:
 
         # --- XGBoost Training ---
         try:
-            st.write("Training XGBoost...")
+            st.write("Training XGBoost.")
             xgb_model = XGBClassifier(
                 n_estimators=200, max_depth=10, random_state=42, n_jobs=-1,
                 objective='multi:softprob', num_class=len(np.unique(y)),
@@ -623,7 +614,7 @@ with tab2:
             inp_place = st.text_input("Occurrence Place", key="fir_place")
         with col2:
             inp_month = st.number_input("Month (1-12)", min_value=1, max_value=12, value=1, key="fir_month")
-            inp_year = st.number_input("Year", min_value=2000, max_value=2030, value=2024, key="fir_year")
+            inp_year = st.number_input("Year", min_value=2000, max_value=2030, value=2025, key="fir_year")
             inp_brief = st.text_area("Brief Facts", key="fir_brief")
         submit_fir = st.form_submit_button("Analyze & Predict")
 
@@ -631,7 +622,7 @@ with tab2:
         new_fingerprint = " || ".join([inp_major, inp_minor, inp_place, inp_brief])
         st.info("Analyzing similar cases and predicting case closure...")
 
-        # Find similar cases
+        # Find similar cases with FIR numbers
         def find_similar_cases(new_text, top_k=5):
             results = []
             try:
@@ -658,7 +649,7 @@ with tab2:
             sim_df = pd.DataFrame(similar)
             sim_df['Status'] = sim_df.apply(lambda r: 'Closed' if any(x in str(r.get(c, '')).lower() for c in ['CASE_STAGE', disp_col] for x in ['close', 'disposed', 'final', 'withdraw', 'compromise']) else 'Running', axis=1)
             st.subheader("Similar Historical Cases")
-            display_cols = [c for c in [ps_col, district_col, major_head_col, minor_head_col, 'CASE_STAGE', disp_col, 'Status', '_SIM_SCORE'] if c in sim_df.columns or c == 'Status' or c == '_SIM_SCORE']
+            display_cols = ['FIR_NO'] + [c for c in [ps_col, district_col, major_head_col, minor_head_col, 'CASE_STAGE', disp_col, 'Status', '_SIM_SCORE'] if c in sim_df.columns or c == 'Status' or c == '_SIM_SCORE']
             st.table(sim_df[display_cols].head())
             status_counts = sim_df['Status'].value_counts()
             cols = st.columns(len(status_counts))
@@ -682,6 +673,7 @@ with tab2:
                 probs = disp_model.predict_proba(X_sample)[0]
                 disp_probs = {disp_le.classes_[i]: float(p) for i, p in enumerate(probs)}
                 st.subheader("Case Closure Probabilities")
+                st.write("Your case has high probability of:")
                 fig = px.bar(x=list(disp_probs.values()), y=list(disp_probs.keys()), orientation='h',
                              title="Closure Outcome Probabilities", labels={'x': 'Probability', 'y': 'Outcome'},
                              color_discrete_sequence=['#FF3D00'])
