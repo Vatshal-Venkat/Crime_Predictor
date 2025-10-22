@@ -678,6 +678,10 @@ with tab2:
                              title="Closure Outcome Probabilities", labels={'x': 'Probability', 'y': 'Outcome'},
                              color_discrete_sequence=['#FF3D00'])
                 st.plotly_chart(fig)
+                # Determine and display the most likely outcome
+                max_outcome = max(disp_probs, key=disp_probs.get)
+                max_prob = disp_probs[max_outcome] * 100
+                st.success(f"Conclusion: Most likely outcome is **{max_outcome}** with **{max_prob:.1f}%** probability.")
                 for k, v in disp_probs.items():
                     st.write(f"{k}: {v*100:.1f}%")
             except Exception as e:
