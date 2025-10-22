@@ -103,6 +103,7 @@ district_col = find_col(['DISTRICT'])
 minor_head_col = find_col(['MINOR_HEAD'])
 ps_col = find_col(['PS', 'POLICE STATION', 'POLICE_STN'])
 disp_col = find_col(['TYPE_OF_DISP', 'DISPOSITION', 'DISPOSAL_TYPE', 'FINAL_DISP'])
+case_stage_col = find_col(['CASE_STAGE'])
 
 if not major_head_col:
     st.error(f"❌ Could not find a crime type column. Columns present: {list(df.columns)}")
@@ -110,7 +111,7 @@ if not major_head_col:
     st.stop()
 
 # --- Clean Text Fields ---
-for c in [major_head_col, ps_col, district_col, minor_head_col, disp_col]:
+for c in [major_head_col, ps_col, district_col, minor_head_col, disp_col, case_stage_col]:
     if c and c in df.columns:
         df[c] = df[c].astype(str).str.strip().str.title()
 
@@ -374,8 +375,8 @@ if target_col:
                     color_continuous_scale=PROFESSIONAL_PALETTE
                 )
                 fig_perm.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
+                    plot_bgcolor='black',
+                    paper_bgcolor='black',
                     font_color='#333333',
                     title_font_color='#FF3D00',
                     xaxis_title="Importance",
@@ -451,7 +452,7 @@ disp_le = None
 disp_labels = None
 
 if disp_col:
-    df_disp = df[[major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR', 'OCCURENCE_PLACE', disp_col]].copy().dropna(subset=[disp_col])
+    df_disp = df[[major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR', 'OCCURENCE_PLACE', disp_col, case_stage_col]].copy().dropna(subset=[disp_col])
     valid_dispositions = ['Police Station', 'Court', 'Self-Compromise', 'Withdraw']
     df_disp = df_disp[df_disp[disp_col].isin(valid_dispositions)]
     
@@ -622,7 +623,7 @@ with tab2:
         new_fingerprint = " || ".join([inp_major, inp_minor, inp_place, inp_brief])
         st.info("Analyzing similar cases and predicting case closure...")
 
-        # Find similar cases with FIR numbers
+        # Find similar cases with FIR numbers and case stage
         def find_similar_cases(new_text, top_k=5):
             results = []
             try:
@@ -649,14 +650,14 @@ with tab2:
             sim_df = pd.DataFrame(similar)
             sim_df['Status'] = sim_df.apply(lambda r: 'Closed' if any(x in str(r.get(c, '')).lower() for c in ['CASE_STAGE', disp_col] for x in ['close', 'disposed', 'final', 'withdraw', 'compromise']) else 'Running', axis=1)
             st.subheader("Similar Historical Cases")
-            display_cols = ['FIR_NO'] + [c for c in [ps_col, district_col, major_head_col, minor_head_col, 'CASE_STAGE', disp_col, 'Status', '_SIM_SCORE'] if c in sim_df.columns or c == 'Status' or c == '_SIM_SCORE']
+            display_cols = ['FIR_NO', case_stage_col] + [c for c in [ps_col, district_col, major_head_col, minor_head_col, disp_col, 'Status', '_SIM_SCORE'] if c in sim_df.columns or c == 'Status' or c == '_SIM_SCORE']
             st.table(sim_df[display_cols].head())
             status_counts = sim_df['Status'].value_counts()
             cols = st.columns(len(status_counts))
             for i, (k, v) in enumerate(status_counts.items()):
                 cols[i].metric(k, v)
         
-        # Predict disposition
+        # Predict disposition and case stage
         if disp_model:
             X_sample = pd.DataFrame()
             X_sample['FIR_MONTH'] = [float(inp_month)]
@@ -681,7 +682,7 @@ with tab2:
                 # Determine and display the most likely outcome
                 max_outcome = max(disp_probs, key=disp_probs.get)
                 max_prob = disp_probs[max_outcome] * 100
-                st.success(f"Conclusion: Most likely outcome is **{max_outcome}** with **{max_prob:.1f}%** probability.")
+                st.success(f"Conclusion: Your case will be {max_outcome.lower()} by police" if max_outcome == 'Police Station' else f"Conclusion: Your case will be concluded at the {max_outcome.lower()}")
                 for k, v in disp_probs.items():
                     st.write(f"{k}: {v*100:.1f}%")
             except Exception as e:
