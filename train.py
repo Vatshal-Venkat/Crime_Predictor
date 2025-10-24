@@ -446,17 +446,17 @@ except Exception as ex:
     st.warning(f"⚠️ Treemap visualization failed: {ex}")
     logging.warning(f"Treemap visualization failed: {ex}")
 
-# --- Disposition Model Training ---
-disp_model = None
-disp_le = None
-disp_labels = None
+# --- Case Stage Model Training ---
+case_model = None
+case_le = None
+case_labels = None
 
-if disp_col:
-    df_disp = df[[major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR', 'OCCURENCE_PLACE', disp_col, case_stage_col]].copy().dropna(subset=[disp_col])
-    valid_dispositions = ['Police Station', 'Court', 'Self-Compromise', 'Withdraw']
-    df_disp = df_disp[df_disp[disp_col].isin(valid_dispositions)]
+if case_stage_col:
+    df_case = df[[major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR', 'OCCURENCE_PLACE', case_stage_col]].copy().dropna(subset=[case_stage_col])
+    valid_case_stages = df_case[case_stage_col].value_counts().index.tolist()  # Use all available case stages
+    df_case = df_case[df_case[case_stage_col].isin(valid_case_stages)]
     
-    if df_disp.shape[0] >= 50 and df_disp[disp_col].nunique() >= 2:
+    if df_case.shape[0] >= 50 and df_case[case_stage_col].nunique() >= 2:
         # Text feature engineering
         text_column_name = "_SIM_TEXT"
         df[text_column_name] = df[[major_head_col, minor_head_col, 'OCCURENCE_PLACE']].apply(lambda r: " || ".join(r.astype(str)), axis=1)
@@ -465,37 +465,37 @@ if disp_col:
             st.session_state['tfidf_matrix'] = vect.fit_transform(df[text_column_name].astype(str))
             st.session_state['tfidf_vect'] = vect
         
-        X_disp = pd.DataFrame()
-        X_disp['FIR_MONTH'] = df_disp['FIR_MONTH'].astype(float).fillna(1)
-        X_disp['FIR_YEAR'] = df_disp['FIR_YEAR'].astype(float).fillna(df_disp['FIR_YEAR'].median())
+        X_case = pd.DataFrame()
+        X_case['FIR_MONTH'] = df_case['FIR_MONTH'].astype(float).fillna(1)
+        X_case['FIR_YEAR'] = df_case['FIR_YEAR'].astype(float).fillna(df_case['FIR_YEAR'].median())
         
-        arr = st.session_state['tfidf_matrix'].toarray()[df_disp.index]
+        arr = st.session_state['tfidf_matrix'].toarray()[df_case.index]
         k = min(32, arr.shape[1])
         chunk_size = max(1, arr.shape[1] // k)
         agg = np.array([arr[:, i:i+chunk_size].mean(axis=1) for i in range(0, arr.shape[1], chunk_size)]).T
         for i in range(min(16, agg.shape[1])):
-            X_disp[f"txt_{i}"] = agg[:, i]
+            X_case[f"txt_{i}"] = agg[:, i]
         
-        y_disp = df_disp[disp_col]
-        disp_le = LabelEncoder()
-        y_disp_encoded = disp_le.fit_transform(y_disp)
-        le_dict[disp_col] = disp_le
-        disp_labels = disp_le.classes_
+        y_case = df_case[case_stage_col]
+        case_le = LabelEncoder()
+        y_case_encoded = case_le.fit_transform(y_case)
+        le_dict[case_stage_col] = case_le
+        case_labels = case_le.classes_
         
         # Balance classes
-        combined = X_disp.copy()
-        combined[disp_col] = y_disp
-        max_count = combined[disp_col].value_counts().max()
-        dfs = [resample(grp, replace=True, n_samples=max_count, random_state=42) if len(grp) < max_count else grp for cls, grp in combined.groupby(disp_col)]
+        combined = X_case.copy()
+        combined[case_stage_col] = y_case
+        max_count = combined[case_stage_col].value_counts().max()
+        dfs = [resample(grp, replace=True, n_samples=max_count, random_state=42) if len(grp) < max_count else grp for cls, grp in combined.groupby(case_stage_col)]
         balanced = pd.concat(dfs, ignore_index=True)
-        y_disp_bal = balanced[disp_col]
-        X_disp_bal = balanced.drop(columns=[disp_col])
-        y_disp_bal_encoded = disp_le.transform(y_disp_bal)
+        y_case_bal = balanced[case_stage_col]
+        X_case_bal = balanced.drop(columns=[case_stage_col])
+        y_case_bal_encoded = case_le.transform(y_case_bal)
         
-        # Train disposition neural network
-        def create_disp_nn():
+        # Train case stage neural network
+        def create_case_nn():
             model = Sequential([
-                Input(shape=(X_disp_bal.shape[1],)),
+                Input(shape=(X_case_bal.shape[1],)),
                 Dense(256, activation='relu'),
                 BatchNormalization(),
                 Dropout(0.4),
@@ -503,22 +503,22 @@ if disp_col:
                 BatchNormalization(),
                 Dropout(0.4),
                 Dense(64, activation='relu'),
-                Dense(len(np.unique(y_disp_encoded)), activation='softmax')
+                Dense(len(np.unique(y_case_encoded)), activation='softmax')
             ])
             model.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
             return model
         
-        disp_model = KerasClassifier(model=create_disp_nn, epochs=100, batch_size=32, verbose=0)
-        disp_model.fit(X_disp_bal, y_disp_bal_encoded)
-        disp_accuracy = accuracy_score(y_disp_bal_encoded, disp_model.predict(X_disp_bal))
-        st.success(f"✅ Disposition Neural Network Accuracy: {disp_accuracy:.3f}")
-        disp_model.model_.save('disposition_model_nn.h5')
+        case_model = KerasClassifier(model=create_case_nn, epochs=100, batch_size=32, verbose=0)
+        case_model.fit(X_case_bal, y_case_bal_encoded)
+        case_accuracy = accuracy_score(y_case_bal_encoded, case_model.predict(X_case_bal))
+        st.success(f"✅ Case Stage Neural Network Accuracy: {case_accuracy:.3f}")
+        case_model.model_.save('case_stage_model_nn.h5')
     else:
-        st.warning("⚠️ Insufficient data for disposition model.")
-        logging.info("Not enough disposition-labeled data.")
+        st.warning("⚠️ Insufficient data for case stage model.")
+        logging.info("Not enough case stage-labeled data.")
 else:
-    st.warning("⚠️ No disposition column found.")
-    logging.info("No disposition column found.")
+    st.warning("⚠️ No case stage column found.")
+    logging.info("No case stage column found.")
 
 # --- Prediction Section ---
 st.header("Predict Crime Location & Case Outcome")
@@ -621,7 +621,7 @@ with tab2:
 
     if submit_fir:
         new_fingerprint = " || ".join([inp_major, inp_minor, inp_place, inp_brief])
-        st.info("Analyzing similar cases and predicting case closure...")
+        st.info("Analyzing similar cases and predicting case stage...")
 
         # Find similar cases with FIR numbers and case stage
         def find_similar_cases(new_text, top_k=5):
@@ -657,8 +657,8 @@ with tab2:
             for i, (k, v) in enumerate(status_counts.items()):
                 cols[i].metric(k, v)
         
-        # Predict disposition and case stage
-        if disp_model:
+        # Predict case stage
+        if case_model:
             X_sample = pd.DataFrame()
             X_sample['FIR_MONTH'] = [float(inp_month)]
             X_sample['FIR_YEAR'] = [float(inp_year)]
@@ -671,34 +671,52 @@ with tab2:
                 X_sample[f"txt_{i}"] = agg[:, i]
             
             try:
-                probs = disp_model.predict_proba(X_sample)[0]
-                disp_probs = {disp_le.classes_[i]: float(p) for i, p in enumerate(probs)}
-                st.subheader("Case Closure Probabilities")
-                st.write("Your case has high probability of:")
-                fig = px.bar(x=list(disp_probs.values()), y=list(disp_probs.keys()), orientation='h',
-                             title="Closure Outcome Probabilities", labels={'x': 'Probability', 'y': 'Outcome'},
-                             color_discrete_sequence=['#FF3D00'])
+                probs = case_model.predict_proba(X_sample)[0]
+                case_probs = {case_le.classes_[i]: float(p) for i, p in enumerate(probs)}
+                st.subheader("Case Stage Probabilities")
+                st.write("Your case has the following probabilities of reaching each stage:")
+                for stage, prob in case_probs.items():
+                    st.write(f"Probability of case_stage '{stage}': {prob*100:.2f}%")
+                
+                # Plot case stage probabilities
+                fig = px.bar(
+                    x=list(case_probs.values()),
+                    y=list(case_probs.keys()),
+                    orientation='h',
+                    title="Case Stage Probabilities",
+                    labels={'x': 'Probability', 'y': 'Case Stage'},
+                    color_discrete_sequence=['#FF3D00']
+                )
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    font_color='#333333',
+                    title_font_color='#FF3D00',
+                    xaxis_title="Probability",
+                    yaxis_title="Case Stage",
+                    xaxis=dict(showgrid=True, gridcolor='#E0E0E0'),
+                    yaxis=dict(showgrid=True, gridcolor='#E0E0E0')
+                )
                 st.plotly_chart(fig)
+                
                 # Determine and display the most likely outcome
-                max_outcome = max(disp_probs, key=disp_probs.get)
-                max_prob = disp_probs[max_outcome] * 100
-                st.success(f"Conclusion: Your case will be {max_outcome.lower()} by police" if max_outcome == 'Police Station' else f"Conclusion: Your case will be concluded at the {max_outcome.lower()}")
-                for k, v in disp_probs.items():
-                    st.write(f"{k}: {v*100:.1f}%")
+                max_stage = max(case_probs, key=case_probs.get)
+                max_prob = case_probs[max_stage] * 100
+                st.success(f"Conclusion: Your case is most likely to reach '{max_stage.lower()}' stage ({max_prob:.1f}%)")
             except Exception as e:
-                st.error(f"❌ Disposition prediction failed: {e}")
-                logging.exception("Disposition prediction error")
+                st.error(f"❌ Case stage prediction failed: {e}")
+                logging.exception("Case stage prediction error")
         else:
             # Frequency-based fallback
             filt = df[df[major_head_col].astype(str).str.lower().str.contains(inp_major.strip().lower(), na=False)]
-            if disp_col and not filt.empty:
-                freq = filt[disp_col].value_counts(normalize=True).head(4)
+            if case_stage_col and not filt.empty:
+                freq = filt[case_stage_col].value_counts(normalize=True).head(4)
                 freq_df = freq.reset_index()
-                freq_df.columns = [disp_col, 'Proportion']
-                st.subheader("Historical Disposition Proportions")
+                freq_df.columns = [case_stage_col, 'Proportion']
+                st.subheader("Historical Case Stage Proportions")
                 st.dataframe(freq_df)
-                fig = px.bar(freq_df, x='Proportion', y=disp_col, orientation='h',
-                             title="Historical Closure Proportions", color_discrete_sequence=['#FF3D00'])
+                fig = px.bar(freq_df, x='Proportion', y=case_stage_col, orientation='h',
+                             title="Historical Case Stage Proportions", color_discrete_sequence=['#FF3D00'])
                 st.plotly_chart(fig)
 
 st.markdown("---")
