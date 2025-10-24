@@ -1,7 +1,8 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix
@@ -205,7 +206,7 @@ if target_col:
 
         # --- RandomForest Training ---
         try:
-            st.write("Training RandomForest...")
+            st.write("Training RandomForest.")
             model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
@@ -219,7 +220,7 @@ if target_col:
 
         # --- XGBoost Training ---
         try:
-            st.write("Training XGBoost...")
+            st.write("Training XGBoost.")
             xgb_model = XGBClassifier(
                 n_estimators=100, max_depth=8, random_state=42, n_jobs=-1,
                 objective='multi:softprob', num_class=len(np.unique(y)),
@@ -329,8 +330,8 @@ if target_col:
                     color_continuous_scale=PROFESSIONAL_PALETTE
                 )
                 fig_feat.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
+                    plot_bgcolor='black',
+                    paper_bgcolor='black',
                     font_color='#333333',
                     title_font_color='#FF3D00',
                     xaxis_title="Importance",
@@ -376,7 +377,7 @@ if case_stage_col:
         text_column_name = "_SIM_TEXT"
         df[text_column_name] = df[[major_head_col, minor_head_col, 'OCCURENCE_PLACE']].apply(lambda r: " || ".join(r.astype(str)), axis=1)
         if 'tfidf_vect' not in st.session_state:
-            vect = TfidfVectorizer(max_features=2000, stop_words='english')  # Reduced max_features
+            vect = TfidfVectorizer(max_features=2000, stop_words='english')
             st.session_state['tfidf_matrix'] = vect.fit_transform(df[text_column_name].astype(str))
             st.session_state['tfidf_vect'] = vect
         
@@ -385,10 +386,10 @@ if case_stage_col:
         X_case['FIR_YEAR'] = df_case['FIR_YEAR'].astype(float).fillna(df_case['FIR_YEAR'].median())
         
         arr = st.session_state['tfidf_matrix'].toarray()[df_case.index]
-        k = min(16, arr.shape[1])  # Reduced for speed
+        k = min(16, arr.shape[1])
         chunk_size = max(1, arr.shape[1] // k)
         agg = np.array([arr[:, i:i+chunk_size].mean(axis=1) for i in range(0, arr.shape[1], chunk_size)]).T
-        for i in range(min(8, agg.shape[1])):  # Reduced features
+        for i in range(min(8, agg.shape[1])):
             X_case[f"txt_{i}"] = agg[:, i]
         
         y_case = df_case[case_stage_col]
@@ -411,16 +412,16 @@ if case_stage_col:
         def create_case_nn():
             model = Sequential([
                 Input(shape=(X_case_bal.shape[1],)),
-                Dense(128, activation='relu'),  # Reduced neurons
+                Dense(128, activation='relu'),
                 BatchNormalization(),
-                Dropout(0.3),  # Adjusted dropout
+                Dropout(0.3),
                 Dense(64, activation='relu'),
                 Dense(len(np.unique(y_case_encoded)), activation='softmax')
             ])
             model.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
             return model
         
-        case_model = KerasClassifier(model=create_case_nn, epochs=50, batch_size=64, verbose=0)  # Reduced epochs, larger batch
+        case_model = KerasClassifier(model=create_case_nn, epochs=50, batch_size=64, verbose=0)
         case_model.fit(X_case_bal, y_case_bal_encoded)
         case_accuracy = accuracy_score(y_case_bal_encoded, case_model.predict(X_case_bal))
         st.success(f"✅ Case Stage Neural Network Accuracy: {case_accuracy:.3f}")
@@ -580,10 +581,10 @@ with tab2:
             
             try:
                 probs = case_model.predict_proba(X_sample)
-                if np.isscalar(probs) or probs.ndim == 1:  # Handle scalar or 1D output
+                if np.isscalar(probs) or probs.ndim == 1:
                     probs = np.atleast_2d(probs)[0] if np.isscalar(probs) else probs
                 else:
-                    probs = probs[0]  # Extract first row for single sample
+                    probs = probs[0]
                 case_probs = {case_le.classes_[i]: float(p) for i, p in enumerate(probs)}
                 st.subheader("Case Stage Probabilities")
                 st.write("Your case has the following probabilities of reaching each stage:")
@@ -600,8 +601,8 @@ with tab2:
                     color_discrete_sequence=['#FF3D00']
                 )
                 fig.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
+                    plot_bgcolor='black',
+                    paper_bgcolor='black',
                     font_color='#333333',
                     title_font_color='#FF3D00',
                     xaxis_title="Probability",
