@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix
-from sklearn.inspection import permutation_importance
 from xgboost import XGBClassifier
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, BatchNormalization, Input
@@ -17,12 +16,10 @@ import plotly.graph_objects as go
 import joblib
 from fuzzywuzzy import process
 import logging
-import io
 import os
 import tensorflow as tf
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.ensemble import RandomForestClassifier as RF
 from sklearn.utils import resample
 import uuid
 
@@ -60,10 +57,9 @@ with st.sidebar:
         st.info("Please upload an Excel file to proceed.")
         st.stop()
 
-    # Move blue and yellow info boxes to sidebar
+    # Data cleaning
     df.columns = df.columns.str.strip().str.upper()
-    drop_cols = ['ACTS_SEC', 'ALTERATION_DT', 'CS_DATE',
-                 'TAKENONFILE_DATE', 'DISPOSAL_DT', 'BRIEF_FACTS']
+    drop_cols = ['ACTS_SEC', 'ALTERATION_DT', 'CS_DATE', 'TAKENONFILE_DATE', 'DISPOSAL_DT', 'BRIEF_FACTS']
     df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors='ignore')
     df = df.fillna('Unknown')
     before = df.shape[0]
@@ -147,8 +143,7 @@ df_ml = None
 
 if target_col:
     st.subheader("Training Location Prediction Models")
-    keep = [target_col, major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR',
-            'CASE_STAGE', disp_col, 'GRAVE', 'OCCURENCE_PLACE']
+    keep = [target_col, major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR', 'CASE_STAGE', disp_col, 'GRAVE', 'OCCURENCE_PLACE']
     keep = [c for c in keep if c in df.columns]
     df_ml = df[keep].copy().dropna(subset=[target_col])
 
@@ -180,12 +175,10 @@ if target_col:
                       11:'Monsoon', 12:'Winter'}
         if 'FIR_MONTH' in df_ml.columns:
             df_ml['SEASON'] = df_ml['FIR_MONTH'].map(season_map).fillna('Unknown')
-            st.write("Added SEASON feature.")
             logging.info("Added SEASON feature.")
         if major_head_col in df_ml.columns and disp_col in df_ml.columns:
             df_ml['CRIME_DISP_INTERACT'] = df_ml[major_head_col].astype(str) + '_' + df_ml[disp_col].astype(str)
             df_ml['CRIME_DISP_INTERACT'] = df_ml['CRIME_DISP_INTERACT'].fillna('Unknown_Unknown')
-            st.write("Added CRIME_DISP_INTERACT feature.")
             logging.info("Added CRIME_DISP_INTERACT feature.")
 
         # --- Label Encoding ---
@@ -212,8 +205,8 @@ if target_col:
 
         # --- RandomForest Training ---
         try:
-            st.write("Training RandomForest.")
-            model = RandomForestClassifier(n_estimators=200, max_depth=14, random_state=42, n_jobs=-1)
+            st.write("Training RandomForest...")
+            model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
             rf_accuracy = accuracy_score(y_test, y_pred)
@@ -226,9 +219,9 @@ if target_col:
 
         # --- XGBoost Training ---
         try:
-            st.write("Training XGBoost.")
+            st.write("Training XGBoost...")
             xgb_model = XGBClassifier(
-                n_estimators=200, max_depth=10, random_state=42, n_jobs=-1,
+                n_estimators=100, max_depth=8, random_state=42, n_jobs=-1,
                 objective='multi:softprob', num_class=len(np.unique(y)),
                 eval_metric='mlogloss', learning_rate=0.1, subsample=0.8, colsample_bytree=0.8
             )
@@ -248,7 +241,7 @@ if target_col:
             logging.info("Starting Neural Network training.")
             progress_bar = st.progress(0)
             tf.compat.v1.reset_default_graph()
-            def create_model(neurons=64, layers=1, dropout_rate=0.2, learning_rate=0.001):
+            def create_model(neurons=32, layers=1, dropout_rate=0.2, learning_rate=0.001):
                 model = Sequential([
                     Input(shape=(X_train.shape[1],)),
                     Dense(neurons, activation='relu'),
@@ -263,12 +256,12 @@ if target_col:
 
             nn_model = KerasClassifier(model=create_model, verbose=0)
             param_grid = {
-                'model__neurons': [64],
+                'model__neurons': [32],
                 'model__layers': [1],
                 'model__dropout_rate': [0.2],
                 'model__learning_rate': [0.001],
-                'batch_size': [64],
-                'epochs': [10]
+                'batch_size': [128],
+                'epochs': [5]
             }
             grid = GridSearchCV(estimator=nn_model, param_grid=param_grid, cv=2, n_jobs=1)
             y_train_cat = to_categorical(y_train, num_classes=len(np.unique(y)))
@@ -281,11 +274,9 @@ if target_col:
             progress_bar.progress(100)
 
             nn_pred = nn_model.predict(X_test_scaled)
-            if len(nn_pred.shape) > 1:  # If predict returns probabilities, convert to indices
+            if len(nn_pred.shape) > 1:
                 nn_pred = np.argmax(nn_pred, axis=1)
             nn_accuracy = accuracy_score(y_test, nn_pred)
-            st.success(f"✅ Neural Network Best Params: {nn_model.get_params()['model__neurons']}, layers={nn_model.get_params()['model__layers']}, dropout={nn_model.get_params()['model__dropout_rate']}, learning_rate={nn_model.get_params()['model__learning_rate']}")
-            st.success(f"✅ Neural Network Best CV Score: {best_score:.3f}")
             st.success(f"✅ Neural Network Accuracy on {target_col}: {nn_accuracy:.3f}")
             logging.info(f"Neural Network trained. Accuracy: {nn_accuracy}")
         except Exception as ex:
@@ -317,7 +308,7 @@ if target_col:
             try:
                 st.write("Performing RandomForest Cross-Validation...")
                 cv = min(5, max(2, len(y) // 20))
-                scores = cross_val_score(model, X, y, cv=cv)
+                scores = cross_val_score(model, X, y, cv=cv, n_jobs=-1)
                 st.write(f"Cross-Validation Scores (RF): mean={scores.mean():.2f}, std={scores.std():.2f}")
                 logging.info(f"RandomForest Cross-validation scores: mean={scores.mean():.2f}, std={scores.std():.2f}")
             except Exception as ex:
@@ -352,92 +343,12 @@ if target_col:
                 st.warning(f"⚠️ RandomForest feature importance plot failed: {ex}")
                 logging.warning(f"RandomForest feature importance plot failed: {ex}")
 
-        # --- Feature Importance Plot (Neural Network) ---
-        if nn_model:
-            try:
-                perm_importance = permutation_importance(model, X_test, y_test, n_repeats=10, random_state=42)
-                perm_imp_df = pd.Series(perm_importance.importances_mean, index=X.columns).sort_values(ascending=False)
-                fig_perm = px.bar(
-                    x=perm_imp_df[:10].values,
-                    y=perm_imp_df[:10].index,
-                    orientation='h',
-                    title=f"Top Features Influencing {target_col} (Neural Network - Permutation Importance)",
-                    labels={'x': 'Importance', 'y': 'Feature'},
-                    color=perm_imp_df[:10].values,
-                    color_continuous_scale=PROFESSIONAL_PALETTE
-                )
-                fig_perm.update_layout(
-                    plot_bgcolor='black',
-                    paper_bgcolor='black',
-                    font_color='#333333',
-                    title_font_color='#FF3D00',
-                    xaxis_title="Importance",
-                    yaxis_title="Feature",
-                    xaxis=dict(showgrid=True, gridcolor='#E0E0E0'),
-                    yaxis=dict(showgrid=True, gridcolor='#E0E0E0')
-                )
-                st.plotly_chart(fig_perm)
-            except Exception as ex:
-                st.warning(f"⚠️ Neural Network permutation importance failed: {ex}")
-                logging.warning(f"Neural Network permutation importance failed: {ex}")
-
-        # --- Confusion Matrix ---
-        if model:
-            try:
-                unique_labels = model.classes_
-                cm = confusion_matrix(y_test, y_pred, labels=unique_labels)
-                test_label_counts = pd.Series(y_test).value_counts().loc[unique_labels].fillna(0)
-                top_labels_positions = np.argsort(test_label_counts.values)[::-1][:10]
-                top_encoded_labels = unique_labels[top_labels_positions]
-                top_display = le_dict[target_col].inverse_transform(top_encoded_labels)
-                cm_small = cm[np.ix_(top_labels_positions, top_labels_positions)]
-
-                PROFESSIONAL_COLORSCALE = [
-                    [0, '#F5F5F5'], [0.2, '#E0E0E0'], [0.4, '#B0BEC5'],
-                    [0.6, '#78909C'], [0.8, '#455A64'], [1.0, '#263238']
-                ]
-
-                fig_cm = go.Figure(data=go.Heatmap(
-                    z=cm_small,
-                    x=top_display,
-                    y=top_display,
-                    colorscale=PROFESSIONAL_COLORSCALE,
-                    text=cm_small,
-                    texttemplate="%{text}",
-                    textfont={"size": 12, "color": "white"},
-                    colorbar=dict(title="Count", titleside="right", titlefont=dict(size=14, color='#263238'))
-                ))
-                fig_cm.update_layout(
-                    title=f"Confusion Matrix for {target_col} (Top 10 Classes)",
-                    xaxis_title=f"Predicted {target_col}",
-                    yaxis_title=f"Actual {target_col}",
-                    xaxis=dict(tickangle=45, tickfont=dict(size=12, color='#263238')),
-                    yaxis=dict(tickfont=dict(size=12, color='#263238')),
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
-                    margin=dict(l=50, r=50, t=100, b=100),
-                    width=800,
-                    height=600
-                )
-                st.plotly_chart(fig_cm)
-            except Exception as ex:
-                st.warning(f"⚠️ Confusion matrix plot failed: {ex}")
-                logging.warning(f"Confusion matrix plot failed: {ex}")
-
 # --- Treemap Visualization ---
 try:
     location_col = district_col if district_col else ps_col
     if location_col and major_head_col:
-        # Debug: Log the columns and data shape
-        st.write(f"Generating treemap with location_col={location_col}, major_head_col={major_head_col}")
-        logging.info(f"Generating treemap with location_col={location_col}, major_head_col={major_head_col}, df.shape={df.shape}")
-        
-        # Create pivot table
         crime_pivot = df.groupby([location_col, major_head_col]).size().reset_index(name='Count')
         if not crime_pivot.empty:
-            st.write("Treemap data preview:", crime_pivot.head())  # Debug: Show pivot data
-            logging.info(f"Treemap data shape: {crime_pivot.shape}, first few rows: {crime_pivot.head().to_dict()}")
-            
             fig_tree = px.treemap(crime_pivot, path=[location_col, major_head_col], values='Count',
                                   title=f'Crime Hierarchy by {location_col} and Type',
                                   color='Count', color_continuous_scale=PROFESSIONAL_PALETTE)
@@ -457,7 +368,7 @@ case_labels = None
 
 if case_stage_col:
     df_case = df[[major_head_col, minor_head_col, 'FIR_MONTH', 'FIR_YEAR', 'OCCURENCE_PLACE', case_stage_col]].copy().dropna(subset=[case_stage_col])
-    valid_case_stages = df_case[case_stage_col].value_counts().index.tolist()  # Use all available case stages
+    valid_case_stages = df_case[case_stage_col].value_counts().index.tolist()
     df_case = df_case[df_case[case_stage_col].isin(valid_case_stages)]
     
     if df_case.shape[0] >= 50 and df_case[case_stage_col].nunique() >= 2:
@@ -465,7 +376,7 @@ if case_stage_col:
         text_column_name = "_SIM_TEXT"
         df[text_column_name] = df[[major_head_col, minor_head_col, 'OCCURENCE_PLACE']].apply(lambda r: " || ".join(r.astype(str)), axis=1)
         if 'tfidf_vect' not in st.session_state:
-            vect = TfidfVectorizer(max_features=5000, stop_words='english')
+            vect = TfidfVectorizer(max_features=2000, stop_words='english')  # Reduced max_features
             st.session_state['tfidf_matrix'] = vect.fit_transform(df[text_column_name].astype(str))
             st.session_state['tfidf_vect'] = vect
         
@@ -474,10 +385,10 @@ if case_stage_col:
         X_case['FIR_YEAR'] = df_case['FIR_YEAR'].astype(float).fillna(df_case['FIR_YEAR'].median())
         
         arr = st.session_state['tfidf_matrix'].toarray()[df_case.index]
-        k = min(32, arr.shape[1])
+        k = min(16, arr.shape[1])  # Reduced for speed
         chunk_size = max(1, arr.shape[1] // k)
         agg = np.array([arr[:, i:i+chunk_size].mean(axis=1) for i in range(0, arr.shape[1], chunk_size)]).T
-        for i in range(min(16, agg.shape[1])):
+        for i in range(min(8, agg.shape[1])):  # Reduced features
             X_case[f"txt_{i}"] = agg[:, i]
         
         y_case = df_case[case_stage_col]
@@ -500,19 +411,16 @@ if case_stage_col:
         def create_case_nn():
             model = Sequential([
                 Input(shape=(X_case_bal.shape[1],)),
-                Dense(256, activation='relu'),
+                Dense(128, activation='relu'),  # Reduced neurons
                 BatchNormalization(),
-                Dropout(0.4),
-                Dense(128, activation='relu'),
-                BatchNormalization(),
-                Dropout(0.4),
+                Dropout(0.3),  # Adjusted dropout
                 Dense(64, activation='relu'),
                 Dense(len(np.unique(y_case_encoded)), activation='softmax')
             ])
             model.compile(optimizer=Adam(learning_rate=0.001), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
             return model
         
-        case_model = KerasClassifier(model=create_case_nn, epochs=100, batch_size=32, verbose=0)
+        case_model = KerasClassifier(model=create_case_nn, epochs=50, batch_size=64, verbose=0)  # Reduced epochs, larger batch
         case_model.fit(X_case_bal, y_case_bal_encoded)
         case_accuracy = accuracy_score(y_case_bal_encoded, case_model.predict(X_case_bal))
         st.success(f"✅ Case Stage Neural Network Accuracy: {case_accuracy:.3f}")
@@ -553,10 +461,6 @@ with tab1:
                     freq_df.columns = [freq_target_col, 'Proportion']
                     st.subheader(f"Frequency-based Top {freq_target_col}")
                     st.dataframe(freq_df)
-                    out = io.StringIO()
-                    freq_df.to_csv(out, index=False)
-                    st.download_button("Download Frequency Predictions", data=out.getvalue(),
-                                       file_name=f"freq_predictions_{chosen_crime.replace(' ', '_')}.csv")
                     fig_freq = px.bar(freq_df, x='Proportion', y=freq_target_col, orientation='h',
                                       title=f"Top {freq_target_col} for {chosen_crime.title()}",
                                       color_discrete_sequence=['#FF3D00'])
@@ -627,7 +531,7 @@ with tab2:
         new_fingerprint = " || ".join([inp_major, inp_minor, inp_place, inp_brief])
         st.info("Analyzing similar cases and predicting case stage...")
 
-        # Find similar cases with FIR numbers and case stage
+        # Find similar cases
         def find_similar_cases(new_text, top_k=5):
             results = []
             try:
@@ -668,14 +572,18 @@ with tab2:
             X_sample['FIR_YEAR'] = [float(inp_year)]
             new_vec = st.session_state['tfidf_vect'].transform([new_fingerprint])
             arr = new_vec.toarray()
-            k = min(32, arr.shape[1])
+            k = min(16, arr.shape[1])
             chunk_size = max(1, arr.shape[1] // k)
             agg = np.array([arr[:, i:i+chunk_size].mean(axis=1) for i in range(0, arr.shape[1], chunk_size)]).T
-            for i in range(min(16, agg.shape[1])):
+            for i in range(min(8, agg.shape[1])):
                 X_sample[f"txt_{i}"] = agg[:, i]
             
             try:
-                probs = case_model.predict_proba(X_sample)[0]
+                probs = case_model.predict_proba(X_sample)
+                if np.isscalar(probs) or probs.ndim == 1:  # Handle scalar or 1D output
+                    probs = np.atleast_2d(probs)[0] if np.isscalar(probs) else probs
+                else:
+                    probs = probs[0]  # Extract first row for single sample
                 case_probs = {case_le.classes_[i]: float(p) for i, p in enumerate(probs)}
                 st.subheader("Case Stage Probabilities")
                 st.write("Your case has the following probabilities of reaching each stage:")
