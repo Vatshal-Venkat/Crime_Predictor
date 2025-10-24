@@ -436,15 +436,27 @@ if target_col:
 try:
     location_col = district_col if district_col else ps_col
     if location_col and major_head_col:
+        # Debug: Log the columns and data shape
+        st.write(f"Generating treemap with location_col={location_col}, major_head_col={major_head_col}")
+        logging.info(f"Generating treemap with location_col={location_col}, major_head_col={major_head_col}, df.shape={df.shape}")
+        
+        # Create pivot table
         crime_pivot = df.groupby([location_col, major_head_col]).size().reset_index(name='Count')
         if not crime_pivot.empty:
+            st.write("Treemap data preview:", crime_pivot.head())  # Debug: Show pivot data
+            logging.info(f"Treemap data shape: {crime_pivot.shape}, first few rows: {crime_pivot.head().to_dict()}")
+            
             fig_tree = px.treemap(crime_pivot, path=[location_col, major_head_col], values='Count',
-                                  title=f'Crime Hierarchy by {location_col} and Type')
+                                  title=f'Crime Hierarchy by {location_col} and Type',
+                                  color='Count', color_continuous_scale=PROFESSIONAL_PALETTE)
             st.plotly_chart(fig_tree)
             logging.info("Treemap visualization shown.")
+        else:
+            st.warning("⚠️ No data available for treemap visualization.")
+            logging.warning("Treemap pivot table is empty.")
 except Exception as ex:
-    st.warning(f"⚠️ Treemap visualization failed: {ex}")
-    logging.warning(f"Treemap visualization failed: {ex}")
+    st.error(f"❌ Treemap visualization failed: {ex}")
+    logging.exception("Treemap visualization error")
 
 # --- Case Stage Model Training ---
 case_model = None
@@ -688,8 +700,8 @@ with tab2:
                     color_discrete_sequence=['#FF3D00']
                 )
                 fig.update_layout(
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
+                    plot_bgcolor='black',
+                    paper_bgcolor='black',
                     font_color='#333333',
                     title_font_color='#FF3D00',
                     xaxis_title="Probability",
