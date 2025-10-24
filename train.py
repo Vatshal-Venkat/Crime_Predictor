@@ -20,7 +20,6 @@ import logging
 import io
 import os
 import tensorflow as tf
-import threading
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.ensemble import RandomForestClassifier as RF
@@ -244,61 +243,54 @@ if target_col:
             xgb_model = None
 
         # --- Neural Network Training for Location ---
-        def train_nn():
-            try:
-                st.write("Training Neural Network for Location...")
-                tf.compat.v1.reset_default_graph()
-                def create_model(neurons=128, layers=2, dropout_rate=0.3, learning_rate=0.001):
-                    model = Sequential([
-                        Input(shape=(X_train.shape[1],)),
-                        Dense(neurons, activation='relu'),
-                        BatchNormalization(),
-                        Dropout(dropout_rate),
-                        *[Dense(neurons // 2, activation='relu') for _ in range(layers - 1)],
-                        *[BatchNormalization() for _ in range(layers - 1)],
-                        *[Dropout(dropout_rate) for _ in range(layers - 1)],
-                        Dense(len(np.unique(y)), activation='softmax')
-                    ])
-                    model.compile(optimizer=Adam(learning_rate=learning_rate),
-                                  loss='categorical_crossentropy',
-                                  metrics=['accuracy'])
-                    return model
+        try:
+            st.write("Training Neural Network for Location...")
+            logging.info("Starting Neural Network training.")
+            progress_bar = st.progress(0)
+            tf.compat.v1.reset_default_graph()
+            def create_model(neurons=64, layers=1, dropout_rate=0.2, learning_rate=0.001):
+                model = Sequential([
+                    Input(shape=(X_train.shape[1],)),
+                    Dense(neurons, activation='relu'),
+                    BatchNormalization(),
+                    Dropout(dropout_rate),
+                    Dense(len(np.unique(y)), activation='softmax')
+                ])
+                model.compile(optimizer=Adam(learning_rate=learning_rate),
+                              loss='categorical_crossentropy',
+                              metrics=['accuracy'])
+                return model
 
-                nn_model = KerasClassifier(model=create_model, verbose=0)
-                param_grid = {
-                    'model__neurons': [128],
-                    'model__layers': [2],
-                    'model__dropout_rate': [0.3],
-                    'model__learning_rate': [0.001],
-                    'batch_size': [32],
-                    'epochs': [50]
-                }
-                grid = GridSearchCV(estimator=nn_model, param_grid=param_grid, cv=3, n_jobs=1)
-                y_train_cat = to_categorical(y_train, num_classes=len(np.unique(y)))
-                grid_result = grid.fit(X_train_scaled, y_train_cat)
-                nn_model = grid_result.best_estimator_
-                st.success(f"✅ Neural Network Best Params: {grid_result.best_params_}")
-                st.success(f"✅ Neural Network Best CV Score: {grid_result.best_score_:.3f}")
-                logging.info(f"Neural Network best params: {grid_result.best_params_}")
-                logging.info(f"Neural Network best CV score: {grid_result.best_score_}")
+            nn_model = KerasClassifier(model=create_model, verbose=0)
+            param_grid = {
+                'model__neurons': [64],
+                'model__layers': [1],
+                'model__dropout_rate': [0.2],
+                'model__learning_rate': [0.001],
+                'batch_size': [64],
+                'epochs': [10]
+            }
+            grid = GridSearchCV(estimator=nn_model, param_grid=param_grid, cv=2, n_jobs=1)
+            y_train_cat = to_categorical(y_train, num_classes=len(np.unique(y)))
+            progress_bar.progress(30)
+            grid_result = grid.fit(X_train_scaled, y_train_cat)
+            progress_bar.progress(70)
+            nn_model = grid_result.best_estimator_
+            best_score = grid_result.best_score_
+            logging.info(f"Neural Network training completed. Best params: {grid_result.best_params_}, Best CV score: {best_score:.3f}")
+            progress_bar.progress(100)
 
-                y_test_cat = to_categorical(y_test, num_classes=len(np.unique(y)))
-                nn_pred = nn_model.predict(X_test_scaled)
-                nn_accuracy = accuracy_score(y_test, nn_pred)
-                st.success(f"✅ Neural Network Accuracy on {target_col}: {nn_accuracy:.3f}")
-                logging.info(f"Neural Network trained. Accuracy: {nn_accuracy}")
-                return nn_model
-            except Exception as ex:
-                st.error(f"❌ Neural Network training failed: {ex}")
-                logging.exception("Neural Network error")
-                return None
-
-        nn_thread = threading.Thread(target=lambda: globals().update(nn_model=train_nn()))
-        nn_thread.start()
-        nn_thread.join(timeout=300)
-        if nn_thread.is_alive():
-            st.error("❌ Neural Network training timed out after 5 minutes.")
-            logging.error("Neural Network training timed out after 5 minutes.")
+            nn_pred = nn_model.predict(X_test_scaled)
+            if len(nn_pred.shape) > 1:  # If predict returns probabilities, convert to indices
+                nn_pred = np.argmax(nn_pred, axis=1)
+            nn_accuracy = accuracy_score(y_test, nn_pred)
+            st.success(f"✅ Neural Network Best Params: {nn_model.get_params()['model__neurons']}, layers={nn_model.get_params()['model__layers']}, dropout={nn_model.get_params()['model__dropout_rate']}, learning_rate={nn_model.get_params()['model__learning_rate']}")
+            st.success(f"✅ Neural Network Best CV Score: {best_score:.3f}")
+            st.success(f"✅ Neural Network Accuracy on {target_col}: {nn_accuracy:.3f}")
+            logging.info(f"Neural Network trained. Accuracy: {nn_accuracy}")
+        except Exception as ex:
+            st.error(f"❌ Neural Network training failed: {ex}")
+            logging.exception("Neural Network training error")
             nn_model = None
 
         # --- Save Models ---
@@ -700,8 +692,8 @@ with tab2:
                     color_discrete_sequence=['#FF3D00']
                 )
                 fig.update_layout(
-                    plot_bgcolor='black',
-                    paper_bgcolor='black',
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
                     font_color='#333333',
                     title_font_color='#FF3D00',
                     xaxis_title="Probability",
